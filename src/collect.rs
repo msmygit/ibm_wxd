@@ -305,6 +305,18 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_key_last_wins() {
+        // A KEY appearing twice in an answers file resolves to the LAST value
+        // (the parser inserts into a map line-by-line). This is the documented,
+        // useful behavior for overriding an earlier baseline line further down
+        // the same file. Asserts the real last-wins contract.
+        let parsed = parse_answers("VERSION=5.3.0\nVERSION=5.3.x\n").unwrap();
+        assert_eq!(parsed.values["VERSION"], "5.3.x");
+        // The duplicate is a known SPEC key, so no unknown-key warning fires.
+        assert!(parsed.warnings.is_empty(), "warnings: {:?}", parsed.warnings);
+    }
+
+    #[test]
     fn unknown_key_warns_but_is_kept() {
         let parsed = parse_answers("OCP_URI=https://typo\n").unwrap();
         assert_eq!(parsed.values["OCP_URI"], "https://typo");

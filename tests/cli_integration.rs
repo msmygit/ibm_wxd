@@ -193,6 +193,56 @@ fn missing_required_var_fails_and_writes_no_file() {
 }
 
 #[test]
+fn explicitly_empty_env_secret_fails_and_writes_no_file() {
+    // AC3 end-to-end: the secret is PRESENT in the environment but set to the
+    // empty string (distinct from being absent). The real binary must reject it
+    // with a non-zero exit, name the offending variable, and write no file.
+    let out_path = tmp_path("empty-secret.sh");
+    let _ = std::fs::remove_file(&out_path);
+    let mut env = complete_env();
+    // Replace the entitlement key with an explicit empty value.
+    env.retain(|(k, _)| *k != "IBM_ENTITLEMENT_KEY");
+    env.push(("IBM_ENTITLEMENT_KEY", ""));
+    let (ok, _o, stderr) = run_clean(&env, &["--non-interactive"], &out_path);
+    assert!(!ok, "explicitly-empty required secret must fail");
+    assert!(
+        stderr.contains("IBM_ENTITLEMENT_KEY"),
+        "stderr must name the empty var: {stderr}"
+    );
+    assert!(!out_path.exists(), "no file should be written on failure");
+}
+
+#[test]
+fn non_interactive_emits_correct_values_for_non_secret_vars() {
+    // AC2 (value-level): beyond "the export line exists", assert the generated
+    // file carries the EXACT non-secret values that were supplied.
+    let out_path = tmp_path("values.sh");
+    let (ok, _o, e) = run_clean(&complete_env(), &["--non-interactive"], &out_path);
+    assert!(ok, "generation failed: {e}");
+    let contents = std::fs::read_to_string(&out_path).expect("file should exist");
+    let env_map: HashMap<&str, &str> = complete_env().into_iter().collect();
+    for var in [
+        "OCP_URL",
+        "OPENSHIFT_TYPE",
+        "IMAGE_ARCH",
+        "OCP_USERNAME",
+        "PROJECT_CPD_INST_OPERATORS",
+        "PROJECT_CPD_INST_OPERANDS",
+        "STG_CLASS_BLOCK",
+        "STG_CLASS_FILE",
+        "VERSION",
+        "COMPONENTS",
+    ] {
+        let expected = format!("export {var}='{}'", env_map[var]);
+        assert!(
+            contents.contains(&expected),
+            "missing or wrong value for {var}; expected line `{expected}`\nfile:\n{contents}"
+        );
+    }
+    let _ = std::fs::remove_file(out_path);
+}
+
+#[test]
 fn generated_file_reused_as_answers_is_byte_identical() {
     // G3 end-to-end: generate cpd_vars.sh from env (incl. a single-quote-bearing
     // secret), then feed that exact file back via --answers with NO env. The

@@ -440,6 +440,46 @@ mod tests {
     }
 
     #[test]
+    fn explicitly_empty_secret_env_fails_and_writes_nothing(/* AC3 */) {
+        // Distinct from a *missing* var: the secret is present in the env but set
+        // to the empty string. This must be rejected exactly like a missing one
+        // (trim-empty == required failure), name the var, and write no file.
+        let mut h = Harness::new();
+        let mut env = complete_env();
+        env.insert("IBM_ENTITLEMENT_KEY".into(), String::new());
+        h.env = env;
+        let outcome = h.run(&["--non-interactive"]);
+        assert_eq!(outcome, RunOutcome::Failed);
+        let err = h.stderr_str();
+        assert!(err.contains("IBM_ENTITLEMENT_KEY"), "stderr: {err}");
+        assert!(err.contains("required"), "stderr: {err}");
+        assert!(h.written_file("cpd_vars.sh").is_none(), "no file on failure");
+    }
+
+    #[test]
+    fn non_secret_vars_have_correct_values_in_file(/* AC2 */) {
+        // Strengthens AC2 beyond "the KEY= line exists": assert non-secret values
+        // land with their EXACT collected value (quoted) in the generated file.
+        let mut h = Harness::new();
+        h.env = complete_env();
+        let outcome = h.run(&["--non-interactive"]);
+        assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
+        let file = h.written_file("cpd_vars.sh").unwrap();
+        // Spot-check representative non-secret vars across validation kinds:
+        // URL, enum, namespace, and a plain value.
+        assert!(file.contains("export OCP_URL='https://api.c.example.com:6443'"), "{file}");
+        assert!(file.contains("export OPENSHIFT_TYPE='self-managed'"), "{file}");
+        assert!(file.contains("export IMAGE_ARCH='amd64'"), "{file}");
+        assert!(file.contains("export PROJECT_CPD_INST_OPERATORS='cpd-operators'"), "{file}");
+        assert!(file.contains("export PROJECT_CPD_INST_OPERANDS='cpd-instance'"), "{file}");
+        assert!(file.contains("export VERSION='5.3.x'"), "{file}");
+        assert!(file.contains("export COMPONENTS='wxd'"), "{file}");
+        // And the secret's REAL value must still be in the file (it must, to be
+        // usable) even though it is masked on the console.
+        assert!(file.contains("export IBM_ENTITLEMENT_KEY='ey-secret-key'"), "{file}");
+    }
+
+    #[test]
     fn invalid_url_fails(/* AC4 */) {
         let mut h = Harness::new();
         let mut env = complete_env();
