@@ -1,0 +1,11 @@
+# Rust build artifacts
+/target/
+
+# Generated install config — carries credentials and the IBM entitlement key.
+# NEVER commit a populated copy (see WORKTREE.md / AC10).
+cpd_vars.sh
+
+# Logs
+*.log
+
+# Cargo lock is committed for the binary (reproducible builds); nothing to ignore.
