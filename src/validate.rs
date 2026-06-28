@@ -197,6 +197,22 @@ mod tests {
         spec::find(name).unwrap()
     }
 
+    /// Assert the outcome is an error whose message names the expected variable
+    /// and contains the expected rule keyword (TQ1: "fail clearly" — messages
+    /// must name the var AND the violated rule, not just be non-empty).
+    fn assert_error(outcome: &VarOutcome, var: &str, rule_keyword: &str) {
+        let e = outcome
+            .error
+            .as_ref()
+            .unwrap_or_else(|| panic!("expected an error for {var}"));
+        assert_eq!(e.var, var, "error should name the offending variable");
+        let combined = format!("{e}").to_lowercase();
+        assert!(
+            combined.contains(&rule_keyword.to_lowercase()),
+            "error for {var} should mention rule '{rule_keyword}', got: {e}"
+        );
+    }
+
     // ---- required-ness (AC3) ----
 
     #[test]
@@ -230,25 +246,25 @@ mod tests {
     #[test]
     fn non_url_value_errors() {
         let outcome = validate_value(spec_for("OCP_URL"), "not-a-url");
-        assert!(outcome.error.is_some());
+        assert_error(&outcome, "OCP_URL", "url");
     }
 
     #[test]
     fn ftp_scheme_errors() {
         let outcome = validate_value(spec_for("OCP_URL"), "ftp://api.example.com");
-        assert!(outcome.error.is_some());
+        assert_error(&outcome, "OCP_URL", "scheme");
     }
 
     #[test]
     fn url_without_host_errors() {
         let outcome = validate_value(spec_for("OCP_URL"), "https://");
-        assert!(outcome.error.is_some());
+        assert_error(&outcome, "OCP_URL", "host");
     }
 
     #[test]
     fn url_with_whitespace_errors() {
         let outcome = validate_value(spec_for("OCP_URL"), "https://api .example.com");
-        assert!(outcome.error.is_some());
+        assert_error(&outcome, "OCP_URL", "whitespace");
     }
 
     // ---- namespace (AC5) ----
@@ -262,26 +278,30 @@ mod tests {
     #[test]
     fn uppercase_namespace_errors() {
         let outcome = validate_value(spec_for("PROJECT_CPD_INST_OPERATORS"), "CPD-Operators");
-        assert!(outcome.error.is_some());
+        assert_error(&outcome, "PROJECT_CPD_INST_OPERATORS", "namespace");
+        // The specific invalid character should be surfaced.
+        assert!(outcome.error.unwrap().message.contains('C'));
     }
 
     #[test]
     fn leading_dash_namespace_errors() {
         let outcome = validate_value(spec_for("PROJECT_CPD_INST_OPERANDS"), "-cpd");
-        assert!(outcome.error.is_some());
+        assert_error(&outcome, "PROJECT_CPD_INST_OPERANDS", "-");
     }
 
     #[test]
     fn trailing_dash_namespace_errors() {
         let outcome = validate_value(spec_for("PROJECT_CPD_INST_OPERANDS"), "cpd-");
-        assert!(outcome.error.is_some());
+        assert_error(&outcome, "PROJECT_CPD_INST_OPERANDS", "-");
     }
 
     #[test]
     fn too_long_namespace_errors() {
         let long = "a".repeat(64);
         let outcome = validate_value(spec_for("PROJECT_CPD_INST_OPERANDS"), &long);
-        assert!(outcome.error.is_some());
+        // The rule mentions the 63-char limit and the actual length.
+        assert_error(&outcome, "PROJECT_CPD_INST_OPERANDS", "63");
+        assert!(outcome.error.unwrap().message.contains("64"));
     }
 
     #[test]
@@ -294,7 +314,8 @@ mod tests {
     #[test]
     fn namespace_with_underscore_errors() {
         let outcome = validate_value(spec_for("PROJECT_CPD_INST_OPERANDS"), "cpd_operands");
-        assert!(outcome.error.is_some());
+        assert_error(&outcome, "PROJECT_CPD_INST_OPERANDS", "namespace");
+        assert!(outcome.error.unwrap().message.contains('_'));
     }
 
     // ---- enum (AC6 / Q2) ----
@@ -325,6 +346,15 @@ mod tests {
     #[test]
     fn enum_with_whitespace_errors() {
         let outcome = validate_value(spec_for("OPENSHIFT_TYPE"), "self managed");
-        assert!(outcome.error.is_some());
+        // Message lists the accepted set and flags the whitespace.
+        assert_error(&outcome, "OPENSHIFT_TYPE", "whitespace");
+        assert!(outcome.error.unwrap().message.contains("self-managed"));
+    }
+
+    #[test]
+    fn empty_required_error_names_var_and_rule() {
+        // TQ1: required-ness message must name the var and say "required".
+        let outcome = validate_value(spec_for("IBM_ENTITLEMENT_KEY"), "");
+        assert_error(&outcome, "IBM_ENTITLEMENT_KEY", "required");
     }
 }

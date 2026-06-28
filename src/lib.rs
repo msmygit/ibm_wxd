@@ -80,7 +80,12 @@ pub fn run(args: &[String], io: &mut Io) -> std::io::Result<RunOutcome> {
                 }
             };
             match collect::parse_answers(&body) {
-                Ok(m) => m,
+                Ok(parsed) => {
+                    for w in &parsed.warnings {
+                        writeln!(io.stderr, "warning: {w}")?;
+                    }
+                    parsed.values
+                }
                 Err(msg) => {
                     writeln!(io.stderr, "error: invalid answers file '{path}': {msg}")?;
                     return Ok(RunOutcome::Failed);
@@ -179,27 +184,52 @@ fn read_plain_line() -> std::io::Result<String> {
     Ok(line.trim_end_matches(['\n', '\r']).to_string())
 }
 
-/// Read a line with terminal echo suppressed when stdin is an interactive TTY.
-/// Uses raw `termios` via libc-free FFI to avoid an external dependency; falls
-/// back to a plain read when not a TTY.
+/// Whether stdin is an interactive terminal. Split out so the secret-read policy
+/// can be reasoned about (and tested) independently of the termios FFI.
+#[cfg(unix)]
+fn stdin_is_tty() -> bool {
+    use std::os::unix::io::AsRawFd;
+    let fd = std::io::stdin().as_raw_fd();
+    // SAFETY: isatty is a standard POSIX call on a valid fd.
+    unsafe { ffi::isatty(fd) == 1 }
+}
+
+#[cfg(not(unix))]
+fn stdin_is_tty() -> bool {
+    false
+}
+
+/// Read a secret line. When stdin is an interactive TTY, terminal echo is
+/// suppressed via termios so the secret never appears on screen (AC10). When
+/// stdin is NOT a TTY (piped/redirected), no terminal echo occurs anyway, so a
+/// plain read is safe and silent.
+///
+/// The one dangerous case — an interactive TTY where echo could NOT be disabled
+/// (tcgetattr/tcsetattr failed) — is never silent: it emits a loud stderr warning
+/// before reading, so AC10's guarantee can never break without the user knowing
+/// (F2).
 #[cfg(unix)]
 fn read_secret_line() -> std::io::Result<String> {
     use std::os::unix::io::AsRawFd;
-    let fd = std::io::stdin().as_raw_fd();
 
-    // SAFETY: isatty/tcgetattr/tcsetattr are standard POSIX calls; we only ever
-    // toggle the ECHO flag and always restore the original termios.
+    if !stdin_is_tty() {
+        // Not a terminal: nothing is echoed; read plainly.
+        return read_plain_line();
+    }
+
+    let fd = std::io::stdin().as_raw_fd();
+    // SAFETY: tcgetattr/tcsetattr are standard POSIX calls; we only toggle the
+    // ECHO flag and always restore the original termios.
     unsafe {
-        if ffi::isatty(fd) != 1 {
-            return read_plain_line();
-        }
         let mut term: ffi::Termios = std::mem::zeroed();
         if ffi::tcgetattr(fd, &mut term) != 0 {
+            warn_echo_not_disabled();
             return read_plain_line();
         }
         let original = term;
         term.c_lflag &= !ffi::ECHO;
         if ffi::tcsetattr(fd, ffi::TCSANOW, &term) != 0 {
+            warn_echo_not_disabled();
             return read_plain_line();
         }
 
@@ -215,9 +245,22 @@ fn read_secret_line() -> std::io::Result<String> {
 
 #[cfg(not(unix))]
 fn read_secret_line() -> std::io::Result<String> {
-    // No portable no-echo without a dependency; read plainly. Non-Unix dev boxes
-    // are out of the supported target for this increment.
+    // No portable no-echo without a dependency. On a non-Unix interactive
+    // terminal we cannot guarantee echo is off, so warn loudly first.
+    if stdin_is_tty() {
+        warn_echo_not_disabled();
+    }
     read_plain_line()
+}
+
+/// Loud, actionable warning emitted when secret input may be visible because
+/// terminal echo could not be turned off.
+fn warn_echo_not_disabled() {
+    let _ = writeln!(
+        std::io::stderr(),
+        "warning: could not disable terminal echo; secret input may be visible on screen. \
+         To avoid this, supply secrets via --answers or environment variables."
+    );
 }
 
 /// Minimal POSIX termios FFI, just enough to toggle terminal echo for secret
@@ -454,12 +497,18 @@ mod tests {
     fn answers_file_supplies_values() {
         let mut h = Harness::new();
         let mut body = String::new();
+        // Values are shell-quoted, exactly as a generated cpd_vars.sh (or a
+        // correctly hand-written answers file) presents them. Unquoted values
+        // containing shell metacharacters are intentionally rejected.
         for (k, v) in complete_env() {
-            body.push_str(&format!("{k}={v}\n"));
+            body.push_str(&format!("{k}={}\n", generate::shell_quote(&v)));
         }
         h.files.insert("answers.txt".into(), body);
         let outcome = h.run(&["--non-interactive", "--answers", "answers.txt"]);
         assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
+        // The quoted password must have been decoded back to its exact value.
+        let file = h.written_file("cpd_vars.sh").unwrap();
+        assert!(file.contains("export OCP_PASSWORD='p@ss w$rd\"x'"));
     }
 
     #[test]
@@ -477,5 +526,57 @@ mod tests {
         let outcome = h.run(&["--non-interactive", "--output", "custom.sh"]);
         assert_eq!(outcome, RunOutcome::Generated("custom.sh".into()));
         assert!(h.written_file("custom.sh").is_some());
+    }
+
+    #[test]
+    fn unknown_answers_key_warns_via_stderr(/* F3 */) {
+        let mut h = Harness::new();
+        h.env = complete_env(); // everything valid via env, so generation succeeds
+        h.files
+            .insert("answers.txt".into(), "OCP_URI=https://typo\n".into());
+        let outcome = h.run(&["--non-interactive", "--answers", "answers.txt"]);
+        assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
+        let err = h.stderr_str();
+        assert!(err.contains("OCP_URI"), "stderr: {err}");
+        assert!(err.contains("unknown"), "stderr: {err}");
+    }
+
+    #[test]
+    fn generated_file_round_trips_back_through_answers(/* G3 */) {
+        // Generate with a single-quote-bearing secret, then feed the produced
+        // file straight back as --answers and regenerate. The second file must
+        // equal the first — proving no credential corruption on reuse.
+        let mut env = complete_env();
+        env.insert("OCP_PASSWORD".into(), "pa'ss w$rd".into());
+        env.insert("IBM_ENTITLEMENT_KEY".into(), "key'with'quotes".into());
+
+        let mut first = Harness::new();
+        first.env = env.clone();
+        first.run(&["--non-interactive"]);
+        let generated = first.written_file("cpd_vars.sh").expect("first file");
+
+        let mut second = Harness::new();
+        // No env this round — values come solely from the regenerated answers file.
+        second.files.insert("prior.sh".into(), generated.clone());
+        let outcome = second.run(&["--non-interactive", "--answers", "prior.sh"]);
+        assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
+        let regenerated = second.written_file("cpd_vars.sh").expect("second file");
+
+        assert_eq!(generated, regenerated, "reuse must not corrupt values");
+        // And the regeneration must not have emitted any unknown-key warnings,
+        // since every line came from our own generator (all SPEC keys).
+        assert!(
+            !second.stderr_str().contains("unknown"),
+            "stderr: {}",
+            second.stderr_str()
+        );
+    }
+
+    #[test]
+    fn stdin_is_not_a_tty_under_test_harness(/* F2 fallback path */) {
+        // The test runner's stdin is not an interactive terminal, so the secret
+        // read takes the silent plain-read path (no echo possible, no warning).
+        // This exercises and documents the intended non-TTY fallback.
+        assert!(!stdin_is_tty());
     }
 }

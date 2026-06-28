@@ -191,3 +191,46 @@ fn missing_required_var_fails_and_writes_no_file() {
     assert!(stderr.contains("IBM_ENTITLEMENT_KEY"));
     assert!(!out_path.exists(), "no file should be written on failure");
 }
+
+#[test]
+fn generated_file_reused_as_answers_is_byte_identical() {
+    // G3 end-to-end: generate cpd_vars.sh from env (incl. a single-quote-bearing
+    // secret), then feed that exact file back via --answers with NO env. The
+    // second generation must be byte-identical — proving the advertised "reuse a
+    // prior cpd_vars.sh" workflow never corrupts a credential.
+    let mut env = complete_env();
+    // Replace the password with one that contains a single quote — the case the
+    // old strip_one_quote_pair corrupted.
+    env.retain(|(k, _)| *k != "OCP_PASSWORD");
+    env.push(("OCP_PASSWORD", "pa'ss w$rd\"x`y"));
+
+    let first = tmp_path("reuse-first.sh");
+    let (ok1, _o1, e1) = run_clean(&env, &["--non-interactive"], &first);
+    assert!(ok1, "first generation failed: {e1}");
+    let first_contents = std::fs::read(&first).unwrap();
+
+    // Second run: empty env, values come solely from the prior file.
+    let second = tmp_path("reuse-second.sh");
+    let mut cmd = Command::new(bin());
+    cmd.env_clear();
+    if let Ok(path) = std::env::var("PATH") {
+        cmd.env("PATH", path);
+    }
+    cmd.args(["--non-interactive", "--answers"]);
+    cmd.arg(&first);
+    cmd.arg("--output").arg(&second);
+    cmd.stdin(std::process::Stdio::null());
+    let output = cmd.output().expect("run reuse");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "reuse run failed: {stderr}");
+    assert!(!stderr.contains("unknown"), "no unknown-key warning: {stderr}");
+
+    let second_contents = std::fs::read(&second).unwrap();
+    assert_eq!(
+        first_contents, second_contents,
+        "reusing a generated cpd_vars.sh must reproduce it byte-for-byte"
+    );
+
+    let _ = std::fs::remove_file(first);
+    let _ = std::fs::remove_file(second);
+}
