@@ -1,11 +1,13 @@
 # Install watsonx.data with ease
 
-A guided installer for IBM watsonx.data on an existing OpenShift cluster. This
-repository currently contains the **first increment**: `wxd-config`, a small
-Rust CLI that collects the install configuration, validates it, and generates a
-correct, deterministic, source-able `cpd_vars.sh`. It contacts no cluster and
-installs nothing — it is the configuration front door the later install modules
-will consume.
+A guided installer for IBM watsonx.data on an existing OpenShift cluster,
+targeting **IBM Software Hub / Cloud Pak for Data 5.4.x** (latest: 5.4.0 patch 1;
+docs: <https://www.ibm.com/docs/en/cloud-paks/cp-data>). This repository
+currently contains the **first increment**: `wxd-config`, a small Rust CLI that
+collects the install configuration, validates it, and generates a correct,
+deterministic, source-able `cpd_vars.sh`. It contacts no cluster and installs
+nothing — it is the configuration front door the later install modules will
+consume.
 
 ## wxd-config
 
@@ -63,13 +65,18 @@ The generated `cpd_vars.sh` matches the documented contract in
 | `PROJECT_CPD_INST_OPERANDS` | CPD operands namespace | Kubernetes namespace |
 | `STG_CLASS_BLOCK` | RWO (block) storage class | non-empty |
 | `STG_CLASS_FILE` | RWX (file) storage class | non-empty |
-| `VERSION` | watsonx.data / Software Hub release | non-empty |
+| `VERSION` | watsonx.data / IBM Software Hub release | non-empty; **defaults to `5.4.0`** if omitted |
 | `COMPONENTS` | Component list for `apply-cr` | non-empty |
 
-Each value may be provided three ways, in increasing precedence:
-1. an answers file (`--answers FILE`, `KEY=VALUE` lines),
-2. an environment variable of the same name,
-3. an interactive prompt (interactive mode only).
+`VERSION` is the only variable with a default: when not supplied it falls back to
+`5.4.0` (the latest 5.4.x line; patch 1 is the latest patch). Every other
+variable above is strictly required and errors if missing.
+
+Each value may be provided four ways, in increasing precedence:
+1. the built-in default (only `VERSION` has one),
+2. an interactive prompt (interactive mode only; press Enter to accept a default),
+3. an answers file (`--answers FILE`, `KEY=VALUE` lines),
+4. an environment variable of the same name.
 
 ### Examples
 
@@ -117,6 +124,17 @@ src/
 tests/
   cli_integration.rs   subprocess tests incl. bash -n and source round-trip
 ```
+
+### Downstream client-workstation prerequisites
+
+The later install modules (out of scope for this increment) drive the cluster
+with these client tools — IBM Software Hub 5.4.x requires all three on `PATH`:
+
+- `oc` — the OpenShift CLI.
+- `cpd-cli` — the Cloud Pak for Data CLI (matched to the 5.4.x release).
+- `helm` — **v3.18 / 3.19 / 3.20+** (5.x install steps use Helm).
+
+`wxd-config` itself needs none of these — only a Rust toolchain to build.
 
 ### Out of scope (this increment)
 

@@ -37,7 +37,7 @@ fn complete_env() -> Vec<(&'static str, &'static str)> {
         ("PROJECT_CPD_INST_OPERANDS", "cpd-instance"),
         ("STG_CLASS_BLOCK", "ocs-storagecluster-ceph-rbd"),
         ("STG_CLASS_FILE", "ocs-storagecluster-cephfs"),
-        ("VERSION", "5.3.x"),
+        ("VERSION", "5.4.0"),
         ("COMPONENTS", "watsonx_data"),
     ]
 }
@@ -239,6 +239,23 @@ fn non_interactive_emits_correct_values_for_non_secret_vars() {
             "missing or wrong value for {var}; expected line `{expected}`\nfile:\n{contents}"
         );
     }
+    let _ = std::fs::remove_file(out_path);
+}
+
+#[test]
+fn version_omitted_defaults_to_5_4_0() {
+    // VERSION default end-to-end: omit VERSION, expect a successful generation
+    // whose file pins VERSION='5.4.0'.
+    let out_path = tmp_path("version-default.sh");
+    let mut env = complete_env();
+    env.retain(|(k, _)| *k != "VERSION");
+    let (ok, _o, e) = run_clean(&env, &["--non-interactive"], &out_path);
+    assert!(ok, "omitting VERSION should still succeed via default; stderr:\n{e}");
+    let contents = std::fs::read_to_string(&out_path).expect("file should exist");
+    assert!(
+        contents.contains("export VERSION='5.4.0'"),
+        "expected default VERSION; got:\n{contents}"
+    );
     let _ = std::fs::remove_file(out_path);
 }
 

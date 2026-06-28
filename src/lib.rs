@@ -396,7 +396,7 @@ mod tests {
         e.insert("PROJECT_CPD_INST_OPERANDS".into(), "cpd-instance".into());
         e.insert("STG_CLASS_BLOCK".into(), "ocs-block".into());
         e.insert("STG_CLASS_FILE".into(), "ocs-file".into());
-        e.insert("VERSION".into(), "5.3.x".into());
+        e.insert("VERSION".into(), "5.4.0".into());
         e.insert("COMPONENTS".into(), "wxd".into());
         e
     }
@@ -472,7 +472,7 @@ mod tests {
         assert!(file.contains("export IMAGE_ARCH='amd64'"), "{file}");
         assert!(file.contains("export PROJECT_CPD_INST_OPERATORS='cpd-operators'"), "{file}");
         assert!(file.contains("export PROJECT_CPD_INST_OPERANDS='cpd-instance'"), "{file}");
-        assert!(file.contains("export VERSION='5.3.x'"), "{file}");
+        assert!(file.contains("export VERSION='5.4.0'"), "{file}");
         assert!(file.contains("export COMPONENTS='wxd'"), "{file}");
         // And the secret's REAL value must still be in the file (it must, to be
         // usable) even though it is masked on the console.
@@ -610,6 +610,67 @@ mod tests {
             "stderr: {}",
             second.stderr_str()
         );
+    }
+
+    #[test]
+    fn version_omitted_uses_default_5_4_0() {
+        // (a) VERSION omitted entirely -> generation succeeds, file has 5.4.0.
+        let mut h = Harness::new();
+        let mut env = complete_env();
+        env.remove("VERSION");
+        h.env = env;
+        let outcome = h.run(&["--non-interactive"]);
+        assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
+        let file = h.written_file("cpd_vars.sh").unwrap();
+        assert!(file.contains("export VERSION='5.4.0'"), "{file}");
+    }
+
+    #[test]
+    fn supplied_version_overrides_default_at_run_level() {
+        // (b) a user-supplied VERSION still overrides the default.
+        let mut h = Harness::new();
+        let mut env = complete_env();
+        env.insert("VERSION".into(), "5.4.0-custom".into());
+        h.env = env;
+        h.run(&["--non-interactive"]);
+        let file = h.written_file("cpd_vars.sh").unwrap();
+        assert!(file.contains("export VERSION='5.4.0-custom'"), "{file}");
+    }
+
+    #[test]
+    fn other_required_vars_still_error_when_missing() {
+        // (c) no accidental defaulting: every OTHER required var still fails
+        //     when missing, even though VERSION now defaults.
+        for missing in [
+            "OCP_URL",
+            "OPENSHIFT_TYPE",
+            "IMAGE_ARCH",
+            "OCP_USERNAME",
+            "OCP_PASSWORD",
+            "IBM_ENTITLEMENT_KEY",
+            "PROJECT_CPD_INST_OPERATORS",
+            "PROJECT_CPD_INST_OPERANDS",
+            "STG_CLASS_BLOCK",
+            "STG_CLASS_FILE",
+            "COMPONENTS",
+        ] {
+            let mut h = Harness::new();
+            let mut env = complete_env();
+            env.remove(missing);
+            h.env = env;
+            let outcome = h.run(&["--non-interactive"]);
+            assert_eq!(
+                outcome,
+                RunOutcome::Failed,
+                "removing {missing} should fail (no default)"
+            );
+            assert!(
+                h.stderr_str().contains(missing),
+                "error should name {missing}; stderr: {}",
+                h.stderr_str()
+            );
+            assert!(h.written_file("cpd_vars.sh").is_none());
+        }
     }
 
     #[test]

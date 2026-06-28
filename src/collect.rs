@@ -163,12 +163,17 @@ fn unquote_shell_value(value: &str) -> Result<String, String> {
 }
 
 /// Resolve every variable's value from file + env, then (only in
-/// [`Mode::Interactive`]) prompt for whatever is still missing.
+/// [`Mode::Interactive`]) prompt for whatever is still missing, and finally
+/// apply any [`VarSpec::default`] for a value still absent or left empty.
 ///
-/// Returns the assembled [`Config`] containing whatever was found. Required-ness
-/// and value validity are NOT enforced here — that is the validator's job, run by
-/// the caller after collection — so that a single, consistent error path reports
-/// all problems (AC3).
+/// Precedence (highest first): environment variable, answers file, interactive
+/// input, spec default. The default is applied to a still-missing value (and to
+/// an interactive value the user left blank), so a variable that carries a
+/// default — only `VERSION` today — never errors as "required". Variables with
+/// no default remain strictly required: if absent here, the validator flags them
+/// (AC3). Required-ness and value validity are NOT enforced in this function —
+/// that is the validator's job, run by the caller — so a single, consistent
+/// error path reports all problems.
 ///
 /// `env_lookup` is injected (rather than calling `std::env` directly) so tests
 /// can supply a fake environment with no global state.
@@ -185,20 +190,27 @@ pub fn collect(
         // per-run override; the file is the saved baseline).
         let from_env = env_lookup(spec.name);
         let from_file = answers.get(spec.name).cloned();
-        let resolved = from_env.or(from_file);
+        let mut resolved = from_env.or(from_file);
 
-        match resolved {
-            Some(value) => {
-                config.insert(spec.name.to_string(), value);
-            }
-            None => {
-                if mode == Mode::Interactive {
-                    let value = prompter.prompt(spec.name, spec.description, spec.secret)?;
-                    config.insert(spec.name.to_string(), value);
-                }
-                // NonInteractive: leave it out; validator will flag it missing.
-            }
+        // Interactive: prompt for anything still missing. The prompt advertises
+        // the default (if any) so the user can press Enter to accept it.
+        if resolved.is_none() && mode == Mode::Interactive {
+            let label = match spec.default {
+                Some(d) => format!("{} [default: {d}]", spec.description),
+                None => spec.description.to_string(),
+            };
+            resolved = Some(prompter.prompt(spec.name, &label, spec.secret)?);
         }
+
+        // Apply the spec default when the value is absent, or present-but-empty
+        // (e.g. the user pressed Enter at an interactive prompt that offered one).
+        let value = match (resolved, spec.default) {
+            (Some(v), Some(default)) if v.trim().is_empty() => default.to_string(),
+            (Some(v), _) => v,
+            (None, Some(default)) => default.to_string(),
+            (None, None) => continue, // leave out; validator flags it missing.
+        };
+        config.insert(spec.name.to_string(), value);
     }
 
     Ok(config)
@@ -239,24 +251,24 @@ mod tests {
 
     #[test]
     fn parses_basic_pairs() {
-        let body = "OCP_URL=https://x\nVERSION=5.3.x\n";
+        let body = "OCP_URL=https://x\nVERSION=5.4.0\n";
         let m = parse_answers(body).unwrap().values;
         assert_eq!(m["OCP_URL"], "https://x");
-        assert_eq!(m["VERSION"], "5.3.x");
+        assert_eq!(m["VERSION"], "5.4.0");
     }
 
     #[test]
     fn skips_comments_and_blanks() {
-        let body = "# a comment\n\nVERSION=5.3.x\n   # indented comment\n";
+        let body = "# a comment\n\nVERSION=5.4.0\n   # indented comment\n";
         let m = parse_answers(body).unwrap().values;
         assert_eq!(m.len(), 1);
-        assert_eq!(m["VERSION"], "5.3.x");
+        assert_eq!(m["VERSION"], "5.4.0");
     }
 
     #[test]
     fn tolerates_export_prefix() {
-        let m = parse_answers("export VERSION=5.3.x\n").unwrap().values;
-        assert_eq!(m["VERSION"], "5.3.x");
+        let m = parse_answers("export VERSION=5.4.0\n").unwrap().values;
+        assert_eq!(m["VERSION"], "5.4.0");
     }
 
     #[test]
@@ -269,8 +281,8 @@ mod tests {
     fn unquotes_single_and_double_quoted_values() {
         let m = parse_answers("OCP_PASSWORD='p@ss w$rd'\n").unwrap().values;
         assert_eq!(m["OCP_PASSWORD"], "p@ss w$rd");
-        let m2 = parse_answers("VERSION=\"5.3.x\"\n").unwrap().values;
-        assert_eq!(m2["VERSION"], "5.3.x");
+        let m2 = parse_answers("VERSION=\"5.4.0\"\n").unwrap().values;
+        assert_eq!(m2["VERSION"], "5.4.0");
     }
 
     #[test]
@@ -310,8 +322,8 @@ mod tests {
         // (the parser inserts into a map line-by-line). This is the documented,
         // useful behavior for overriding an earlier baseline line further down
         // the same file. Asserts the real last-wins contract.
-        let parsed = parse_answers("VERSION=5.3.0\nVERSION=5.3.x\n").unwrap();
-        assert_eq!(parsed.values["VERSION"], "5.3.x");
+        let parsed = parse_answers("VERSION=5.4.0\nVERSION=5.4.1\n").unwrap();
+        assert_eq!(parsed.values["VERSION"], "5.4.1");
         // The duplicate is a known SPEC key, so no unknown-key warning fires.
         assert!(parsed.warnings.is_empty(), "warnings: {:?}", parsed.warnings);
     }
@@ -327,7 +339,7 @@ mod tests {
 
     #[test]
     fn known_keys_produce_no_warnings() {
-        let parsed = parse_answers("OCP_URL=https://x\nVERSION=5.3.x\n").unwrap();
+        let parsed = parse_answers("OCP_URL=https://x\nVERSION=5.4.0\n").unwrap();
         assert!(parsed.warnings.is_empty());
     }
 
@@ -340,7 +352,7 @@ mod tests {
 
     #[test]
     fn malformed_line_errors() {
-        let err = parse_answers("VERSION=5.3.x\nnonsense\n").unwrap_err();
+        let err = parse_answers("VERSION=5.4.0\nnonsense\n").unwrap_err();
         assert!(err.contains("line 2"));
     }
 
@@ -383,8 +395,42 @@ mod tests {
         // NeverPrompter panics if called; reaching the end proves no prompt.
         let config =
             collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
-        // Nothing supplied, nothing prompted -> empty config (validator flags it).
-        assert!(config.is_empty());
+        // Nothing supplied, nothing prompted. The only entry present is VERSION,
+        // filled from its spec default; every other (defaultless) var is absent
+        // so the validator will flag it missing.
+        assert_eq!(config.keys().collect::<Vec<_>>(), vec!["VERSION"]);
+        assert_eq!(config["VERSION"], "5.4.0");
+    }
+
+    // ---- collect: VERSION default ----
+
+    #[test]
+    fn version_defaults_when_absent() {
+        let answers = BTreeMap::new();
+        let config =
+            collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
+        assert_eq!(config["VERSION"], "5.4.0");
+    }
+
+    #[test]
+    fn supplied_version_overrides_default() {
+        // A user-supplied value (distinct from the 5.4.0 default) must win.
+        let mut answers = BTreeMap::new();
+        answers.insert("VERSION".to_string(), "5.3.x".to_string());
+        let config =
+            collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
+        assert_eq!(config["VERSION"], "5.3.x");
+    }
+
+    #[test]
+    fn defaultless_var_stays_absent_when_missing() {
+        // A var with no default (e.g. OCP_URL) must NOT be filled — it has to
+        // reach the validator as missing so it errors as required.
+        let answers = BTreeMap::new();
+        let config =
+            collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
+        assert!(!config.contains_key("OCP_URL"));
+        assert!(!config.contains_key("IBM_ENTITLEMENT_KEY"));
     }
 
     // ---- collect: interactive prompts only for missing ----
@@ -401,13 +447,30 @@ mod tests {
         let mut prompter = FakePrompter {
             answers: {
                 let mut a = BTreeMap::new();
-                a.insert("VERSION".to_string(), "5.3.x".to_string());
+                a.insert("VERSION".to_string(), "5.4.0".to_string());
                 a
             },
             asked: Vec::new(),
         };
         let config = collect(Mode::Interactive, &answers, &no_env, &mut prompter).unwrap();
         assert_eq!(prompter.asked, vec!["VERSION".to_string()]);
-        assert_eq!(config["VERSION"], "5.3.x");
+        assert_eq!(config["VERSION"], "5.4.0");
+    }
+
+    #[test]
+    fn interactive_blank_version_falls_back_to_default() {
+        // User is prompted for VERSION and presses Enter (empty) -> default.
+        let mut answers = BTreeMap::new();
+        for spec in SPEC {
+            if spec.name != "VERSION" {
+                answers.insert(spec.name.to_string(), "x".to_string());
+            }
+        }
+        let mut prompter = FakePrompter {
+            answers: BTreeMap::new(), // returns "" for VERSION
+            asked: Vec::new(),
+        };
+        let config = collect(Mode::Interactive, &answers, &no_env, &mut prompter).unwrap();
+        assert_eq!(config["VERSION"], "5.4.0");
     }
 }
