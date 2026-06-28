@@ -15,8 +15,14 @@
 
 ## Port Env Vars
 
+The installer binds no localhost ports at runtime (it drives a remote OpenShift
+cluster). The single entry below is a **development-time** port for the Carbon UI
+dev server, so each worktree gets an isolated port and `create.sh` can allocate
+one. It is not used by the installed product.
+
 | File | Env Var | Value |
 |------|---------|-------|
+| .env.local | UI_PORT | <UI_PORT> |
 
 ## DB Env Vars
 
@@ -33,13 +39,28 @@ echo "No application database — nothing to set up for this worktree."
 ```
 
 ## Dependency Install
-No package manager lockfile. The "dependencies" are client-workstation CLIs the
-installer drives (`oc`, `cpd-cli`). Verify they are on PATH; fail fast if not.
+Two dependency tiers, kept separate on purpose:
+
+- **Build-time** (needed to develop the installer itself — Rust core + Carbon UI):
+  `cargo`/`rustc` and `node`/`npm`. These gate worktree creation.
+- **Runtime** (needed only when the built installer actually drives a cluster):
+  `oc`, `cpd-cli`, and `helm` (v3.18/3.19/3.20+ — IBM Software Hub 5.4.x install
+  steps use Helm). These are NOT required on the dev box to build/test the tool,
+  so they are verified as warnings here, not hard failures.
 
 ```bash
-command -v oc >/dev/null 2>&1 || { echo "oc CLI not found — install per IBM 'Setting up a client workstation' (Software Hub 5.3.x)"; exit 1; }
-command -v cpd-cli >/dev/null 2>&1 || { echo "cpd-cli not found — download from the watsonx.data install docs and add to PATH"; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "jq not found — required by the install scripts"; exit 1; }
+# Build-time toolchain (warn-not-fail so a fresh dev box can still scaffold;
+# the build/test phases surface a hard error if a tool is genuinely required).
+command -v cargo >/dev/null 2>&1 || echo "WARN: cargo/rustc not found — install Rust (https://rustup.rs) before building the installer core."
+command -v node  >/dev/null 2>&1 || echo "WARN: node not found — install Node.js before building the Carbon UI."
+command -v npm   >/dev/null 2>&1 || echo "WARN: npm not found — install Node.js/npm before building the Carbon UI."
+command -v jq    >/dev/null 2>&1 || echo "WARN: jq not found — required by the install scripts at runtime."
+
+# Runtime CLIs (informational only at dev time).
+command -v oc       >/dev/null 2>&1 || echo "INFO: oc not found — only needed when running the installer against a cluster."
+command -v cpd-cli  >/dev/null 2>&1 || echo "INFO: cpd-cli not found — only needed when running the installer against a cluster."
+command -v helm     >/dev/null 2>&1 || echo "INFO: helm not found — Software Hub 5.4.x install steps need Helm v3.18/3.19/3.20+ (only at cluster-run time)."
+echo "Dependency check complete."
 ```
 
 ## Smoke Test
@@ -95,20 +116,33 @@ install step. Nothing binds a localhost port.
 ### Environment Variables
 There is no `.env.example` in the repo. All configuration is centralized in
 `cpd_vars.sh`, which you populate per IBM's *Collecting required information* step
-(Software Hub 5.3.x). Never commit a populated copy — it carries credentials and the
-entitlement key. The variables the install flow expects (verify exact names against
-the `cpd-cli` version in use):
+(IBM Software Hub / Cloud Pak for Data 5.4.x — latest 5.4.0 patch 1; docs:
+https://www.ibm.com/docs/en/cloud-paks/cp-data). Never commit a populated copy —
+it carries credentials and the entitlement key. The env-var contract is stable
+across 5.x; verify exact names against the `cpd-cli` version in use:
 
 - `OCP_URL` — required, OpenShift API server URL the installer targets.
 - `OPENSHIFT_TYPE` — required, cluster flavor (e.g. `self-managed`, `roks`).
 - `IMAGE_ARCH` — required, target architecture (e.g. `amd64`, `s390x`).
-- `OCP_USERNAME` / `OCP_PASSWORD` — login credentials (or use `--token`); cluster-admin for install.
+- **Cluster auth (choose one)** — either `OCP_USERNAME` + `OCP_PASSWORD`, **or** `OCP_TOKEN`. `wxd-config` requires one complete method and emits only the variables for the method you supplied.
 - `IBM_ENTITLEMENT_KEY` — required, pull secret for the IBM Entitled Registry.
+- `IMAGE_PULL_SECRET` — required, name of the image pull secret used for the install.
 - `PROJECT_CPD_INST_OPERATORS` — required, namespace for CPD operators.
 - `PROJECT_CPD_INST_OPERANDS` — required, namespace for CPD operands (watsonx.data instance).
+- `PROJECT_LICENSE_SERVICE` — required, namespace for the IBM License Service.
+- `PROJECT_SCHEDULING_SERVICE` — required, namespace for the scheduling service.
+- `PROJECT_SCHEDULING_BR_SVC` — required, namespace for the scheduling backup/restore service.
 - `STG_CLASS_BLOCK` / `STG_CLASS_FILE` — required, RWO/RWX storage classes for the cluster.
-- `VERSION` — required, watsonx.data / Software Hub release being installed (e.g. `5.3.x`).
-- `COMPONENTS` — required, component list passed to `cpd-cli manage apply-cr`.
+- `VERSION` — watsonx.data / IBM Software Hub release being installed. Defaults to `5.4.0` in `wxd-config` when omitted (5.4.0 patch 1 is the latest); override for a different 5.x release.
+- `PATCH_ID` — patch level for the release; defaults to `latest` in `wxd-config` when omitted.
+- `COMPONENTS` — required, component list passed to `cpd-cli manage apply-cr` (must include `watsonx_data` for a watsonx.data install — the doc's default base set excludes it).
+
+`wxd-config` also **derives** (computes, does not prompt for) these into the
+generated file: `SERVER_ARGUMENTS` (from `OCP_URL`), `OLM_UTILS_IMAGE` (from
+`VERSION`), and `PROJECT_INST_BR_SVC` (from `PROJECT_CPD_INST_OPERATORS`).
+Optional/advanced 5.4.0 template sections — backup & restore, S3 object storage,
+proxy, private registry, tethered projects, `COMPONENTS_TO_SKIP`/`IMAGE_GROUPS` —
+are intentionally out of scope for this baseline.
 
 The `## Port Env Vars` and `## DB Env Vars` tables are empty — no values are
 rewritten per worktree; every worktree shares the `cpd_vars.sh` it copied in.
@@ -130,7 +164,7 @@ cd .worktree/<feature>
 cp ../../cpd_vars.sh ../../.buildpilot.json ../../.mcp.json . 2>/dev/null || true
 
 # 3. Confirm the client toolchain is installed
-command -v oc && command -v cpd-cli && command -v jq
+command -v oc && command -v cpd-cli && command -v helm && command -v jq
 
 # 4. Load config and authenticate to the cluster
 source ./cpd_vars.sh
@@ -153,7 +187,7 @@ No localhost `/health` endpoint exists. Readiness is checked against the cluster
 ### Common Failures
 - **`oc` calls return "Unauthorized" / token expired.** First thing to check: `oc whoami`. If it errors, re-run `oc login "$OCP_URL" ...`; OpenShift tokens are short-lived and expire between sessions.
 - **Install script errors on an empty/missing variable.** First thing to check: `echo "$OCP_URL"` (and the other required vars). If blank, you forgot `source ./cpd_vars.sh`, or `cpd_vars.sh` was never copied into this worktree.
-- **`oc: command not found` or `cpd-cli: command not found`.** First thing to check: `command -v oc cpd-cli`. Install/extract the client workstation tools per the IBM "Setting up a client workstation" doc and add them to PATH before retrying.
+- **`oc: command not found`, `cpd-cli: command not found`, or `helm: command not found`.** First thing to check: `command -v oc cpd-cli helm`. Install/extract the client workstation tools per the IBM "Setting up a client workstation" doc (Software Hub 5.4.x needs `helm` v3.18/3.19/3.20+ alongside `oc` and `cpd-cli`; docs: https://www.ibm.com/docs/en/cloud-paks/cp-data) and add them to PATH before retrying.
 
 ### Teardown
 BuildPilot worktrees: `bp-clean <TICKET-ID>`.
