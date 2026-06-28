@@ -1,0 +1,15 @@
+{
+  "project": "ibm_wxd",
+  "buildpilot_branch_target": "main",
+  "dependency_mode": "stack",
+  "repos": {},
+  "testing_config": ".buildpilot/testing.config.json",
+  "testing_instructions": ".buildpilot/TESTING.md",
+  "product_file": ".buildpilot/PRODUCT.md",
+  "sdlc_file": ".buildpilot/SDLC.md",
+  "services": {
+    "project_management": {
+      "mcp_server": "github"
+    }
+  }
+}

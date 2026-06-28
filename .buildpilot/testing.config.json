@@ -1,0 +1,154 @@
+{
+  "$schema": "testing.config.schema",
+  "$comment": "Product-specific testing configuration. Copy this file to your project's .buildpilot/testing.config.json and customize. Agents read this before writing or running any test.",
+
+  "e2e": {
+    "tool": "playwright | cypress | selenium | none",
+    "startup_order": ["backend", "frontend"],
+    "ready_timeout_seconds": 60,
+
+    "runner": {
+      "workers": 1,
+      "workers_reason": "Explain WHY this worker count. Examples: 'Supabase session pooler limits to 20 connections' or 'Local Postgres, unlimited connections — use CPU count' or 'Shared CI runner with 2 cores'",
+      "timeout_ms": 120000,
+      "retries": 0,
+      "retries_ci": 2,
+      "browser": "chromium | firefox | webkit | msedge",
+      "headed": false
+    },
+
+    "auth": {
+      "strategy": "storage_state | api_token | cookie | none",
+      "strategy_notes": {
+        "storage_state": "Playwright saves localStorage+cookies after login, reuses across tests. Best for cookie/JWT apps.",
+        "api_token": "Generate a token via API before tests, inject as header. Best for API-first apps.",
+        "cookie": "Set auth cookie directly via browser context. Best for simple session apps.",
+        "none": "No auth needed (public app or tests create their own sessions)"
+      },
+      "setup_file": "tests/auth.setup.ts",
+      "state_path": "playwright/.auth/user.json",
+      "fresh_before_run": true,
+      "fresh_before_run_note": "Set true if tokens expire quickly or Zustand hydration conflicts with stale state",
+      "credentials_env": {
+        "email": "YOUR_PW_USERNAME",
+        "password": "YOUR_PW_PASSWORD",
+        "local_flag": "YOUR_PW_LOCAL"
+      },
+      "login_url": "/login",
+      "post_login_url": "/dashboard",
+      "multiple_sign_in_buttons": false,
+      "multiple_sign_in_buttons_note": "If login page has OAuth buttons alongside email/password, set true. Agent must use .first() on sign-in button.",
+      "sign_in_button_strategy": "first exact match | data-testid | nth(0)"
+    },
+
+    "wait_strategy": {
+      "page_load": "domcontentloaded | networkidle | load",
+      "page_load_notes": {
+        "domcontentloaded": "Use when app has polling, websockets, or long-running fetches. Fastest. Pair with hydration_indicator.",
+        "networkidle": "Use when app makes finite requests and settles. Simplest but hangs on apps with polling.",
+        "load": "Wait for all resources including images. Slowest. Rarely needed."
+      },
+      "never_use": [],
+      "never_use_reasons": {},
+      "hydration_indicator": "[data-testid='app-ready'] | [data-tour='main-nav'] | selector that only renders after React hydrates",
+      "hydration_timeout_ms": 60000,
+      "hydration_timeout_note": "How long to wait for SPA to become interactive. Set based on: auth init time + initial data fetch time + render time.",
+      "element_timeout_ms": 30000
+    },
+
+    "ui_blockers": [
+      {
+        "name": "cookie_banner | onboarding_tour | announcement_modal",
+        "description": "What it is and why it blocks tests",
+        "dismiss_selector": "button:has-text('Accept') | button:has-text('Skip')",
+        "dismiss_wait_ms": 1000,
+        "can_reappear_after_navigation": false
+      }
+    ],
+
+    "selectors": {
+      "$comment": "Map logical names to CSS/role selectors. Agents use these instead of hardcoding. Update when UI changes.",
+      "example_add_button": "[data-testid='add-button']",
+      "example_list_items": "[data-testid^='item-']",
+      "example_search": "[data-testid='search-input']"
+    },
+
+    "test_data": {
+      "strategy": "api_seed | fixture_file | shared_account | none",
+      "strategy_notes": {
+        "api_seed": "Create test data via API calls in globalSetup. Best isolation. Requires API endpoints for create+delete.",
+        "fixture_file": "Load from JSON/SQL fixture. Fast but brittle if schema changes.",
+        "shared_account": "Use a pre-seeded test account. Simplest but tests can interfere with each other.",
+        "none": "Tests create their own data inline. Slowest but most isolated."
+      },
+      "seed_endpoint": "/api/test/seed",
+      "cleanup_endpoint": "/api/test/cleanup",
+      "cleanup_strategy": "after_each | after_all | manual"
+    }
+  },
+
+  "infrastructure": {
+    "database": {
+      "type": "postgres_local | supabase | planetscale | sqlite | none",
+      "pooler_mode": "session | transaction | direct | none",
+      "pool_size": 20,
+      "max_overflow": 10,
+      "max_concurrent_safe": 30,
+      "requests_per_page_load": 8,
+      "impact": "Explain how workers × requests_per_page_load relates to pool limits",
+      "recommendation": "Formula: workers = floor(max_concurrent_safe / requests_per_page_load)"
+    },
+
+    "rate_limiting": {
+      "enabled": true,
+      "requests_per_minute": 60,
+      "localhost_exempt": true,
+      "localhost_exempt_note": "If false, agent must throttle interactions or reduce parallelism"
+    },
+
+    "backend": {
+      "port": 8000,
+      "health_endpoint": "/health",
+      "api_base": "http://localhost:8000/api/v1"
+    },
+
+    "frontend": {
+      "port": 3000,
+      "framework": "nextjs | vite | cra | remix | nuxt | svelte",
+      "package_manager": "pnpm | npm | yarn | bun",
+      "hydration_time_seconds": "1-3 for Vite, 5-15 for Next.js with data fetching"
+    }
+  },
+
+  "unit_testing": {
+    "backend": {
+      "framework": "pytest | jest | go_test | none",
+      "async_mode": "auto | manual | sync_only",
+      "directories": {
+        "unit": "tests/unit/",
+        "mock": "tests/mock/",
+        "integration": "tests/integration/"
+      },
+      "run_commands": {
+        "unit": "cd backend && pytest tests/unit/ -v",
+        "mock": "cd backend && pytest tests/mock/ -v",
+        "integration": "cd backend && pytest tests/integration/ -v",
+        "coverage": "cd backend && pytest --cov=app"
+      }
+    },
+    "frontend": {
+      "framework": "vitest | jest | none",
+      "installed": true,
+      "run_command": "cd frontend && npm test",
+      "note": "Any special notes about the frontend test setup"
+    }
+  },
+
+  "known_issues": [
+    {
+      "area": "Describe the area",
+      "impact": "What goes wrong",
+      "workaround": "How to handle it in tests"
+    }
+  ]
+}

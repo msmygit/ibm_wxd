@@ -9,3 +9,13 @@ cpd_vars.sh
 *.log
 
 # Cargo lock is committed for the binary (reproducible builds); nothing to ignore.
+
+# Added by BuildPilot installer
+.buildpilot/state/
+.buildpilot/tickets/
+.worktree/
+.buildpilot/lib
+.buildpilot/tools
+.buildpilot/providers
+.claude/agents
+.claude/skills
