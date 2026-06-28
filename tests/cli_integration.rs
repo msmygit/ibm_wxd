@@ -33,13 +33,26 @@ fn complete_env() -> Vec<(&'static str, &'static str)> {
         ("OCP_USERNAME", "kubeadmin"),
         ("OCP_PASSWORD", "p@ss w$rd\"x`y'z"),
         ("IBM_ENTITLEMENT_KEY", "ey-super-secret-entitlement"),
+        ("IMAGE_PULL_SECRET", "ibm-entitlement-key"),
         ("PROJECT_CPD_INST_OPERATORS", "cpd-operators"),
         ("PROJECT_CPD_INST_OPERANDS", "cpd-instance"),
+        ("PROJECT_LICENSE_SERVICE", "ibm-licensing"),
+        ("PROJECT_SCHEDULING_SERVICE", "cpd-scheduler"),
+        ("PROJECT_SCHEDULING_BR_SVC", "cpd-scheduler-br"),
         ("STG_CLASS_BLOCK", "ocs-storagecluster-ceph-rbd"),
         ("STG_CLASS_FILE", "ocs-storagecluster-cephfs"),
         ("VERSION", "5.4.0"),
         ("COMPONENTS", "watsonx_data"),
     ]
+}
+
+/// Like [`complete_env`] but using the token auth method (no username/password).
+fn complete_env_token() -> Vec<(&'static str, &'static str)> {
+    complete_env()
+        .into_iter()
+        .filter(|(k, _)| *k != "OCP_USERNAME" && *k != "OCP_PASSWORD")
+        .chain(std::iter::once(("OCP_TOKEN", "sha256~tok-en-value")))
+        .collect()
 }
 
 /// Run the binary with a clean environment (only the vars we pass), the given
@@ -151,6 +164,74 @@ fn shell_significant_values_round_trip_through_source() {
         );
     }
     let _ = std::fs::remove_file(out_path);
+}
+
+#[test]
+fn derived_vars_expand_when_sourced() {
+    // Derived vars must be sourceable and expand from the variables they
+    // reference (SERVER_ARGUMENTS from OCP_URL, OLM_UTILS_IMAGE from VERSION,
+    // PROJECT_INST_BR_SVC from PROJECT_CPD_INST_OPERATORS).
+    let Some(sh) = find_shell() else {
+        eprintln!("no POSIX shell found; skipping derived-var test");
+        return;
+    };
+    let out_path = tmp_path("derived.sh");
+    let (ok, _o, e) = run_clean(&complete_env(), &["--non-interactive"], &out_path);
+    assert!(ok, "generation failed: {e}");
+
+    // bash -n first.
+    assert!(
+        Command::new(sh).arg("-n").arg(&out_path).status().unwrap().success(),
+        "generated file (with derived vars) is not valid shell"
+    );
+
+    let cases = [
+        ("SERVER_ARGUMENTS", "--server=https://api.cluster.example.com:6443"),
+        ("OLM_UTILS_IMAGE", "icr.io/cpopen/cpd/olm-utils-v4:5.4.0"),
+        ("PROJECT_INST_BR_SVC", "cpd-operators-br-svc"),
+    ];
+    for (var, expected) in cases {
+        let script = format!("source '{}'; printf '%s' \"${var}\"", out_path.display());
+        let output = Command::new(sh).arg("-c").arg(&script).output().expect("source");
+        assert!(output.status.success(), "sourcing failed for {var}");
+        let got = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(got, expected, "derived {var} expanded wrong");
+    }
+    let _ = std::fs::remove_file(out_path);
+}
+
+#[test]
+fn token_auth_generates_valid_shell_without_userpass() {
+    // Choose-one auth via token: file is valid shell, has the token, omits
+    // username/password.
+    let out_path = tmp_path("token.sh");
+    let (ok, _o, e) = run_clean(&complete_env_token(), &["--non-interactive"], &out_path);
+    assert!(ok, "token-auth generation failed: {e}");
+    let contents = std::fs::read_to_string(&out_path).unwrap();
+    assert!(contents.contains("export OCP_TOKEN="));
+    assert!(!contents.contains("OCP_USERNAME"));
+    assert!(!contents.contains("OCP_PASSWORD"));
+    if let Some(sh) = find_shell() {
+        assert!(
+            Command::new(sh).arg("-n").arg(&out_path).status().unwrap().success(),
+            "token-auth file is not valid shell"
+        );
+    }
+    let _ = std::fs::remove_file(out_path);
+}
+
+#[test]
+fn no_auth_method_fails() {
+    let out_path = tmp_path("noauth.sh");
+    let _ = std::fs::remove_file(&out_path);
+    let env: Vec<(&str, &str)> = complete_env()
+        .into_iter()
+        .filter(|(k, _)| *k != "OCP_USERNAME" && *k != "OCP_PASSWORD")
+        .collect();
+    let (ok, _o, stderr) = run_clean(&env, &["--non-interactive"], &out_path);
+    assert!(!ok, "missing auth must fail");
+    assert!(stderr.contains("OCP_TOKEN"), "stderr: {stderr}");
+    assert!(!out_path.exists());
 }
 
 #[test]

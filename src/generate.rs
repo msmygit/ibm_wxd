@@ -10,7 +10,7 @@
 //! The [`Config`] passed in is assumed already validated; generation does not
 //! re-validate. Generation never contacts a cluster.
 
-use crate::spec::SPEC;
+use crate::spec::{DERIVED, SPEC};
 use std::collections::BTreeMap;
 
 /// A fully-collected, validated configuration: variable name -> value.
@@ -44,11 +44,18 @@ pub fn shell_quote(value: &str) -> String {
 
 /// Render the full `cpd_vars.sh` contents from a validated [`Config`].
 ///
-/// Output is deterministic: a fixed header (no timestamps, no random ordering)
-/// followed by one `export` line per variable in [`SPEC`] order. The caller is
-/// responsible for having validated `config`; any required variable missing
-/// here is a programming error and panics, because generation must never silently
-/// emit a partial file.
+/// Output is deterministic: a fixed header (no timestamps, no random ordering),
+/// then one `export KEY='value'` line per collected variable in [`SPEC`] order,
+/// then the [`DERIVED`] variables emitted as literal shell referencing the
+/// collected ones.
+///
+/// Emission rules per collected variable:
+/// - A **required** variable (`optional == false`) MUST be present; a missing one
+///   is a programming error and panics, because generation must never silently
+///   emit a partial file. (The caller validates first.)
+/// - An **optional** variable (the choose-one auth set) is emitted only when
+///   present and non-empty — so a token-based config never writes empty
+///   username/password lines, and vice-versa.
 pub fn render(config: &Config) -> String {
     let mut out = String::new();
     out.push_str("#!/usr/bin/env bash\n");
@@ -58,17 +65,37 @@ pub fn render(config: &Config) -> String {
     out.push('\n');
 
     for spec in SPEC {
-        let value = config.get(spec.name).unwrap_or_else(|| {
-            panic!(
-                "generate::render called with missing required variable '{}' — \
-                 config must be validated before generation",
-                spec.name
-            )
-        });
+        match config.get(spec.name) {
+            Some(value) if !value.trim().is_empty() => {
+                out.push_str("export ");
+                out.push_str(spec.name);
+                out.push('=');
+                out.push_str(&shell_quote(value));
+                out.push('\n');
+            }
+            // Present-but-empty or absent.
+            _ => {
+                if !spec.optional {
+                    panic!(
+                        "generate::render called with missing required variable '{}' — \
+                         config must be validated before generation",
+                        spec.name
+                    );
+                }
+                // optional & absent/empty: skip silently (choose-one auth).
+            }
+        }
+    }
+
+    // Derived variables: literal shell referencing the variables above. Emitted
+    // verbatim (NOT shell-quoted) so `${OCP_URL}` etc. expand on `source`.
+    out.push('\n');
+    out.push_str("# Derived values (computed from the variables above).\n");
+    for d in DERIVED {
         out.push_str("export ");
-        out.push_str(spec.name);
+        out.push_str(d.name);
         out.push('=');
-        out.push_str(&shell_quote(value));
+        out.push_str(d.value_expr);
         out.push('\n');
     }
 
@@ -157,5 +184,48 @@ mod tests {
         let mut c = full_config();
         c.remove("VERSION");
         let _ = render(&c);
+    }
+
+    #[test]
+    fn render_does_not_panic_when_optional_auth_absent() {
+        // Required vars present; the optional auth vars are absent. Render must
+        // succeed and simply omit them.
+        let mut c = full_config();
+        c.remove("OCP_USERNAME");
+        c.remove("OCP_PASSWORD");
+        c.remove("OCP_TOKEN");
+        let rendered = render(&c);
+        assert!(!rendered.contains("export OCP_USERNAME="));
+        assert!(!rendered.contains("export OCP_TOKEN="));
+    }
+
+    #[test]
+    fn render_omits_empty_optional_auth() {
+        // Present-but-empty optional vars are skipped too.
+        let mut c = full_config();
+        c.insert("OCP_TOKEN".into(), "".into());
+        c.remove("OCP_USERNAME");
+        c.remove("OCP_PASSWORD");
+        let rendered = render(&c);
+        assert!(!rendered.contains("export OCP_TOKEN="));
+    }
+
+    #[test]
+    fn render_emits_derived_vars_referencing_others() {
+        let rendered = render(&full_config());
+        assert!(rendered.contains("export SERVER_ARGUMENTS=\"--server=${OCP_URL}\""));
+        assert!(rendered
+            .contains("export OLM_UTILS_IMAGE=icr.io/cpopen/cpd/olm-utils-v4:${VERSION}"));
+        assert!(
+            rendered.contains("export PROJECT_INST_BR_SVC=${PROJECT_CPD_INST_OPERATORS}-br-svc")
+        );
+    }
+
+    #[test]
+    fn derived_vars_appear_after_collected_vars() {
+        let rendered = render(&full_config());
+        let last_collected = rendered.find("export COMPONENTS=").unwrap();
+        let first_derived = rendered.find("export SERVER_ARGUMENTS=").unwrap();
+        assert!(first_derived > last_collected, "derived must come after collected");
     }
 }

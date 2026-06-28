@@ -102,10 +102,11 @@ pub fn run(args: &[String], io: &mut Io) -> std::io::Result<RunOutcome> {
     };
 
     // 2. Collect.
-    let config = collect::collect(mode, &answers, io.env, io.prompter)?;
+    let mut config = collect::collect(mode, &answers, io.env, io.prompter)?;
 
-    // 3. Validate every required variable; accumulate ALL problems so the user
-    //    sees the full picture, not just the first failure.
+    // 3. Validate every variable (per-field), accumulating ALL problems so the
+    //    user sees the full picture, not just the first failure. Optional auth
+    //    vars never error on absence here — the cross-field check below governs.
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     for v in spec::SPEC {
@@ -116,6 +117,15 @@ pub fn run(args: &[String], io: &mut Io) -> std::io::Result<RunOutcome> {
         }
         if let Some(w) = outcome.warning {
             warnings.push(w);
+        }
+    }
+
+    // 3b. Cross-field cluster-auth check (choose-one).
+    {
+        let cfg = &config;
+        let lookup = |name: &str| cfg.get(name).cloned();
+        if let Some(e) = validate::validate_auth(&lookup) {
+            errors.push(e);
         }
     }
 
@@ -134,6 +144,19 @@ pub fn run(args: &[String], io: &mut Io) -> std::io::Result<RunOutcome> {
         return Ok(RunOutcome::Failed);
     }
 
+    // 3c. Emit only the chosen auth method's variables: drop any auth var not in
+    //     the selected set so render never writes the unused method's lines.
+    let emit_auth = {
+        let cfg = &config;
+        let lookup = |name: &str| cfg.get(name).cloned();
+        validate::auth_vars_to_emit(&lookup)
+    };
+    for auth_var in [spec::AUTH_USERNAME, spec::AUTH_PASSWORD, spec::AUTH_TOKEN] {
+        if !emit_auth.contains(&auth_var) {
+            config.remove(auth_var);
+        }
+    }
+
     // 4. Generate and write. (config is fully validated here.)
     let contents = generate::render(&config);
     if let Err(e) = (io.write_file)(&opts.output_file, &contents) {
@@ -141,10 +164,14 @@ pub fn run(args: &[String], io: &mut Io) -> std::io::Result<RunOutcome> {
         return Ok(RunOutcome::Failed);
     }
 
-    // 5. Masked summary (AC10) — never echo secrets.
+    // 5. Masked summary (AC10) — never echo secrets. Show only the variables
+    //    actually written (skip absent optional auth vars).
     writeln!(io.stdout, "Wrote {} with:", opts.output_file)?;
     for v in spec::SPEC {
-        let value = config.get(v.name).map(String::as_str).unwrap_or("");
+        let value = match config.get(v.name) {
+            Some(value) if !value.trim().is_empty() => value.as_str(),
+            _ => continue,
+        };
         writeln!(
             io.stdout,
             "  {} = {}",
@@ -384,6 +411,7 @@ mod tests {
         }
     }
 
+    /// A complete, valid environment using the username+password auth method.
     fn complete_env() -> BTreeMap<String, String> {
         let mut e = BTreeMap::new();
         e.insert("OCP_URL".into(), "https://api.c.example.com:6443".into());
@@ -392,12 +420,25 @@ mod tests {
         e.insert("OCP_USERNAME".into(), "kubeadmin".into());
         e.insert("OCP_PASSWORD".into(), "p@ss w$rd\"x".into());
         e.insert("IBM_ENTITLEMENT_KEY".into(), "ey-secret-key".into());
+        e.insert("IMAGE_PULL_SECRET".into(), "ibm-entitlement-key".into());
         e.insert("PROJECT_CPD_INST_OPERATORS".into(), "cpd-operators".into());
         e.insert("PROJECT_CPD_INST_OPERANDS".into(), "cpd-instance".into());
+        e.insert("PROJECT_LICENSE_SERVICE".into(), "ibm-licensing".into());
+        e.insert("PROJECT_SCHEDULING_SERVICE".into(), "cpd-scheduler".into());
+        e.insert("PROJECT_SCHEDULING_BR_SVC".into(), "cpd-scheduler-br".into());
         e.insert("STG_CLASS_BLOCK".into(), "ocs-block".into());
         e.insert("STG_CLASS_FILE".into(), "ocs-file".into());
         e.insert("VERSION".into(), "5.4.0".into());
-        e.insert("COMPONENTS".into(), "wxd".into());
+        e.insert("COMPONENTS".into(), "watsonx_data".into());
+        e
+    }
+
+    /// A complete, valid environment using the token auth method instead.
+    fn complete_env_token() -> BTreeMap<String, String> {
+        let mut e = complete_env();
+        e.remove("OCP_USERNAME");
+        e.remove("OCP_PASSWORD");
+        e.insert("OCP_TOKEN".into(), "sha256~abc-token".into());
         e
     }
 
@@ -422,9 +463,17 @@ mod tests {
         let outcome = h.run(&["--non-interactive"]);
         assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
         let file = h.written_file("cpd_vars.sh").expect("file written");
+        // Every REQUIRED var must be present. Optional auth vars are present only
+        // for the chosen method (here: username+password, so no OCP_TOKEN line).
         for v in spec::SPEC {
-            assert!(file.contains(&format!("export {}=", v.name)));
+            if v.optional {
+                continue;
+            }
+            assert!(file.contains(&format!("export {}=", v.name)), "missing {}", v.name);
         }
+        assert!(file.contains("export OCP_USERNAME="));
+        assert!(file.contains("export OCP_PASSWORD="));
+        assert!(!file.contains("export OCP_TOKEN="), "token method not chosen");
     }
 
     #[test]
@@ -473,7 +522,24 @@ mod tests {
         assert!(file.contains("export PROJECT_CPD_INST_OPERATORS='cpd-operators'"), "{file}");
         assert!(file.contains("export PROJECT_CPD_INST_OPERANDS='cpd-instance'"), "{file}");
         assert!(file.contains("export VERSION='5.4.0'"), "{file}");
-        assert!(file.contains("export COMPONENTS='wxd'"), "{file}");
+        assert!(file.contains("export COMPONENTS='watsonx_data'"), "{file}");
+        // New 5.4.0 required vars.
+        assert!(file.contains("export IMAGE_PULL_SECRET='ibm-entitlement-key'"), "{file}");
+        assert!(file.contains("export PROJECT_LICENSE_SERVICE='ibm-licensing'"), "{file}");
+        assert!(file.contains("export PROJECT_SCHEDULING_SERVICE='cpd-scheduler'"), "{file}");
+        assert!(file.contains("export PROJECT_SCHEDULING_BR_SVC='cpd-scheduler-br'"), "{file}");
+        // PATCH_ID defaults to latest.
+        assert!(file.contains("export PATCH_ID='latest'"), "{file}");
+        // Derived vars present and referencing other vars.
+        assert!(file.contains("export SERVER_ARGUMENTS=\"--server=${OCP_URL}\""), "{file}");
+        assert!(
+            file.contains("export OLM_UTILS_IMAGE=icr.io/cpopen/cpd/olm-utils-v4:${VERSION}"),
+            "{file}"
+        );
+        assert!(
+            file.contains("export PROJECT_INST_BR_SVC=${PROJECT_CPD_INST_OPERATORS}-br-svc"),
+            "{file}"
+        );
         // And the secret's REAL value must still be in the file (it must, to be
         // usable) even though it is masked on the console.
         assert!(file.contains("export IBM_ENTITLEMENT_KEY='ey-secret-key'"), "{file}");
@@ -639,17 +705,21 @@ mod tests {
 
     #[test]
     fn other_required_vars_still_error_when_missing() {
-        // (c) no accidental defaulting: every OTHER required var still fails
-        //     when missing, even though VERSION now defaults.
+        // (c) no accidental defaulting: every non-optional, non-defaulted var
+        //     still fails when missing. Auth vars are optional (governed by the
+        //     choose-one rule), and VERSION/PATCH_ID carry defaults — exclude
+        //     those; everything else must error individually.
         for missing in [
             "OCP_URL",
             "OPENSHIFT_TYPE",
             "IMAGE_ARCH",
-            "OCP_USERNAME",
-            "OCP_PASSWORD",
             "IBM_ENTITLEMENT_KEY",
+            "IMAGE_PULL_SECRET",
             "PROJECT_CPD_INST_OPERATORS",
             "PROJECT_CPD_INST_OPERANDS",
+            "PROJECT_LICENSE_SERVICE",
+            "PROJECT_SCHEDULING_SERVICE",
+            "PROJECT_SCHEDULING_BR_SVC",
             "STG_CLASS_BLOCK",
             "STG_CLASS_FILE",
             "COMPONENTS",
@@ -671,6 +741,88 @@ mod tests {
             );
             assert!(h.written_file("cpd_vars.sh").is_none());
         }
+    }
+
+    // ---- cluster auth: choose-one ----
+
+    #[test]
+    fn auth_userpass_alone_succeeds() {
+        let mut h = Harness::new();
+        h.env = complete_env(); // has username+password, no token
+        let outcome = h.run(&["--non-interactive"]);
+        assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
+        let file = h.written_file("cpd_vars.sh").unwrap();
+        assert!(file.contains("export OCP_USERNAME='kubeadmin'"));
+        assert!(!file.contains("OCP_TOKEN"), "no token line for userpass method");
+    }
+
+    #[test]
+    fn auth_token_alone_succeeds_and_emits_only_token() {
+        let mut h = Harness::new();
+        h.env = complete_env_token();
+        let outcome = h.run(&["--non-interactive"]);
+        assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
+        let file = h.written_file("cpd_vars.sh").unwrap();
+        assert!(file.contains("export OCP_TOKEN='sha256~abc-token'"));
+        assert!(!file.contains("OCP_USERNAME"), "no username line for token method");
+        assert!(!file.contains("OCP_PASSWORD"), "no password line for token method");
+    }
+
+    #[test]
+    fn auth_none_fails_with_actionable_message() {
+        let mut h = Harness::new();
+        let mut env = complete_env();
+        env.remove("OCP_USERNAME");
+        env.remove("OCP_PASSWORD");
+        // no token either
+        h.env = env;
+        let outcome = h.run(&["--non-interactive"]);
+        assert_eq!(outcome, RunOutcome::Failed);
+        let err = h.stderr_str();
+        assert!(err.contains("OCP_USERNAME"), "stderr: {err}");
+        assert!(err.contains("OCP_TOKEN"), "stderr: {err}");
+        assert!(h.written_file("cpd_vars.sh").is_none());
+    }
+
+    #[test]
+    fn auth_username_without_password_fails() {
+        let mut h = Harness::new();
+        let mut env = complete_env();
+        env.remove("OCP_PASSWORD"); // username present, password missing, no token
+        h.env = env;
+        let outcome = h.run(&["--non-interactive"]);
+        assert_eq!(outcome, RunOutcome::Failed);
+        assert!(h.written_file("cpd_vars.sh").is_none());
+    }
+
+    #[test]
+    fn token_secret_is_masked_in_summary(/* AC10 */) {
+        let mut h = Harness::new();
+        h.env = complete_env_token();
+        h.run(&["--non-interactive"]);
+        let out = h.stdout_str();
+        assert!(out.contains("OCP_TOKEN = ********"));
+        assert!(!out.contains("sha256~abc-token"));
+    }
+
+    #[test]
+    fn patch_id_defaults_to_latest() {
+        let mut h = Harness::new();
+        h.env = complete_env(); // no PATCH_ID supplied
+        h.run(&["--non-interactive"]);
+        let file = h.written_file("cpd_vars.sh").unwrap();
+        assert!(file.contains("export PATCH_ID='latest'"), "{file}");
+    }
+
+    #[test]
+    fn patch_id_is_overridable() {
+        let mut h = Harness::new();
+        let mut env = complete_env();
+        env.insert("PATCH_ID".into(), "patch-1".into());
+        h.env = env;
+        h.run(&["--non-interactive"]);
+        let file = h.written_file("cpd_vars.sh").unwrap();
+        assert!(file.contains("export PATCH_ID='patch-1'"), "{file}");
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //!   --help, -h               Print usage and exit 0.
 //!   --version, -V            Print version and exit 0.
 
-use crate::spec::{ValidationKind, SPEC};
+use crate::spec::{ValidationKind, DERIVED, SPEC};
 
 /// Parsed CLI options.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +91,7 @@ pub fn help_text() -> String {
     s.push_str("    -h, --help           Print this help and exit.\n");
     s.push_str("    -V, --version        Print version and exit.\n\n");
 
-    s.push_str("REQUIRED INPUTS (each may be given via --answers, an env var, or a prompt):\n");
+    s.push_str("INPUTS (each may be given via --answers, an env var, or a prompt):\n");
     for spec in SPEC {
         let kind = match spec.validation {
             ValidationKind::NonEmpty => "non-empty".to_string(),
@@ -99,17 +99,36 @@ pub fn help_text() -> String {
             ValidationKind::Namespace => "k8s namespace".to_string(),
             ValidationKind::Enum(vals) => format!("one of [{}]", vals.join(", ")),
         };
-        let secret = if spec.secret { " (secret)" } else { "" };
+        let mut tags = String::new();
+        if spec.secret {
+            tags.push_str(" (secret)");
+        }
+        if spec.optional {
+            tags.push_str(" (auth, choose-one)");
+        }
+        if let Some(d) = spec.default {
+            tags.push_str(&format!(" (default {d})"));
+        }
         s.push_str(&format!(
             "    {:<28} {} [{}]{}\n",
-            spec.name, spec.description, kind, secret
+            spec.name, spec.description, kind, tags
         ));
     }
     s.push('\n');
 
+    s.push_str("CLUSTER AUTH (choose one):\n");
+    s.push_str("    Provide BOTH OCP_USERNAME and OCP_PASSWORD, OR provide OCP_TOKEN.\n");
+    s.push_str("    Only the chosen method's variables are written to the output file.\n\n");
+
+    s.push_str("DERIVED (computed automatically, not prompted):\n");
+    for d in DERIVED {
+        s.push_str(&format!("    {:<28} = {}\n", d.name, d.value_expr));
+    }
+    s.push('\n');
+
     s.push_str("OUTPUT:\n");
-    s.push_str("    A deterministic, source-able cpd_vars.sh. Never commit it — it carries\n");
-    s.push_str("    credentials and the IBM entitlement key.\n");
+    s.push_str("    A deterministic, source-able cpd_vars.sh for IBM Software Hub 5.4.x.\n");
+    s.push_str("    Never commit it — it carries credentials and the IBM entitlement key.\n");
 
     s
 }
@@ -184,6 +203,17 @@ mod tests {
         for spec in SPEC {
             assert!(help.contains(spec.name), "help missing {}", spec.name);
         }
+    }
+
+    #[test]
+    fn help_documents_auth_choose_one_and_derived() {
+        let help = help_text();
+        assert!(help.contains("OCP_TOKEN"));
+        assert!(help.to_lowercase().contains("choose one"));
+        for d in DERIVED {
+            assert!(help.contains(d.name), "help missing derived {}", d.name);
+        }
+        assert!(help.contains("5.4"), "help should reference the 5.4.x target");
     }
 
     #[test]

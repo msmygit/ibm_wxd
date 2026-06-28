@@ -51,6 +51,12 @@ pub struct VarOutcome {
 /// does not run, so the message is always the clearest single cause.
 pub fn validate_value(spec: &VarSpec, value: &str) -> VarOutcome {
     if value.trim().is_empty() {
+        // An optional variable may legitimately be empty/absent — its presence
+        // is governed by cross-field rules (see [`validate_auth`]), not the
+        // universal required check. Skip it here so it never errors as required.
+        if spec.optional {
+            return VarOutcome::default();
+        }
         return VarOutcome {
             error: Some(ValidationError {
                 var: spec.name.to_string(),
@@ -65,6 +71,59 @@ pub fn validate_value(spec: &VarSpec, value: &str) -> VarOutcome {
         ValidationKind::Url => check_url(spec.name, value),
         ValidationKind::Namespace => check_namespace(spec.name, value),
         ValidationKind::Enum(allowed) => check_enum(spec.name, value, allowed),
+    }
+}
+
+/// Cross-field cluster-auth check (choose-one): the configuration is valid if
+/// EITHER both `OCP_USERNAME` and `OCP_PASSWORD` are provided, OR `OCP_TOKEN` is
+/// provided. If neither complete method is present, returns an actionable error.
+///
+/// A value is considered "provided" when present and non-empty after trimming.
+/// `lookup` returns the collected value for a variable name (or `None`).
+pub fn validate_auth(lookup: &dyn Fn(&str) -> Option<String>) -> Option<ValidationError> {
+    let present = |name: &str| {
+        lookup(name)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    };
+
+    let has_userpass = present(crate::spec::AUTH_USERNAME) && present(crate::spec::AUTH_PASSWORD);
+    let has_token = present(crate::spec::AUTH_TOKEN);
+
+    if has_userpass || has_token {
+        return None;
+    }
+
+    Some(ValidationError {
+        var: "cluster authentication".to_string(),
+        message: format!(
+            "no complete cluster-auth method provided; supply both {} and {}, or {}",
+            crate::spec::AUTH_USERNAME,
+            crate::spec::AUTH_PASSWORD,
+            crate::spec::AUTH_TOKEN
+        ),
+    })
+}
+
+/// Which cluster-auth variables to EMIT, given what the user provided. Returns
+/// the set of auth variable names to write to `cpd_vars.sh`: only the chosen
+/// method's variables, so a token-based config never emits empty username/password
+/// lines (and vice-versa). If (unusually) both methods are complete, the
+/// username+password pair is chosen deterministically.
+pub fn auth_vars_to_emit(lookup: &dyn Fn(&str) -> Option<String>) -> Vec<&'static str> {
+    let present = |name: &str| {
+        lookup(name)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    };
+    let has_userpass = present(crate::spec::AUTH_USERNAME) && present(crate::spec::AUTH_PASSWORD);
+
+    if has_userpass {
+        vec![crate::spec::AUTH_USERNAME, crate::spec::AUTH_PASSWORD]
+    } else if present(crate::spec::AUTH_TOKEN) {
+        vec![crate::spec::AUTH_TOKEN]
+    } else {
+        Vec::new()
     }
 }
 
@@ -356,5 +415,85 @@ mod tests {
         // TQ1: required-ness message must name the var and say "required".
         let outcome = validate_value(spec_for("IBM_ENTITLEMENT_KEY"), "");
         assert_error(&outcome, "IBM_ENTITLEMENT_KEY", "required");
+    }
+
+    // ---- optional vars (auth set) skip the required check ----
+
+    #[test]
+    fn empty_optional_auth_var_does_not_error() {
+        let outcome = validate_value(spec_for("OCP_TOKEN"), "");
+        assert!(outcome.error.is_none(), "optional var must not error when empty");
+        let outcome = validate_value(spec_for("OCP_USERNAME"), "");
+        assert!(outcome.error.is_none());
+    }
+
+    // ---- cross-field auth (choose-one) ----
+
+    fn lookup_from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name: &str| {
+            owned
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        }
+    }
+
+    #[test]
+    fn auth_userpass_is_valid() {
+        let l = lookup_from(&[("OCP_USERNAME", "admin"), ("OCP_PASSWORD", "pw")]);
+        assert!(validate_auth(&l).is_none());
+    }
+
+    #[test]
+    fn auth_token_is_valid() {
+        let l = lookup_from(&[("OCP_TOKEN", "sha256~x")]);
+        assert!(validate_auth(&l).is_none());
+    }
+
+    #[test]
+    fn auth_none_errors_actionably() {
+        let l = lookup_from(&[]);
+        let e = validate_auth(&l).expect("expected an auth error");
+        assert!(e.message.contains("OCP_USERNAME"));
+        assert!(e.message.contains("OCP_PASSWORD"));
+        assert!(e.message.contains("OCP_TOKEN"));
+    }
+
+    #[test]
+    fn auth_username_only_is_incomplete() {
+        let l = lookup_from(&[("OCP_USERNAME", "admin")]);
+        assert!(validate_auth(&l).is_some());
+    }
+
+    #[test]
+    fn auth_empty_values_count_as_absent() {
+        let l = lookup_from(&[("OCP_USERNAME", ""), ("OCP_PASSWORD", ""), ("OCP_TOKEN", "  ")]);
+        assert!(validate_auth(&l).is_some());
+    }
+
+    #[test]
+    fn emit_set_picks_userpass() {
+        let l = lookup_from(&[("OCP_USERNAME", "a"), ("OCP_PASSWORD", "b")]);
+        assert_eq!(auth_vars_to_emit(&l), vec!["OCP_USERNAME", "OCP_PASSWORD"]);
+    }
+
+    #[test]
+    fn emit_set_picks_token() {
+        let l = lookup_from(&[("OCP_TOKEN", "t")]);
+        assert_eq!(auth_vars_to_emit(&l), vec!["OCP_TOKEN"]);
+    }
+
+    #[test]
+    fn emit_set_prefers_userpass_when_both_present() {
+        let l = lookup_from(&[
+            ("OCP_USERNAME", "a"),
+            ("OCP_PASSWORD", "b"),
+            ("OCP_TOKEN", "t"),
+        ]);
+        assert_eq!(auth_vars_to_emit(&l), vec!["OCP_USERNAME", "OCP_PASSWORD"]);
     }
 }

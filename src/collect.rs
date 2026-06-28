@@ -62,9 +62,14 @@ pub struct ParsedAnswers {
 /// Lines beginning with `export ` are tolerated (the leading keyword is dropped)
 /// so a prior `cpd_vars.sh` can be re-used directly.
 ///
-/// Keys not present in [`SPEC`] are kept but reported as warnings, so a typo'd
-/// variable name (e.g. `OCP_URI=`) surfaces as "unknown variable 'OCP_URI'"
-/// rather than a misdirecting "OCP_URL is required" later (fail clearly, F3).
+/// Each key is classified three ways:
+///   1. a [`SPEC`] input variable → kept and used as input;
+///   2. a derived variable name (see [`crate::spec::is_derived`]) → silently
+///      ignored (the tool recomputes it; re-feeding a generated `cpd_vars.sh`
+///      must not warn) and NOT collected;
+///   3. anything else → kept but reported as a warning, so a typo'd variable
+///      name (e.g. `OCP_URI=`) surfaces as "unknown variable 'OCP_URI'" rather
+///      than a misdirecting "OCP_URL is required" later (fail clearly, F3).
 pub fn parse_answers(body: &str) -> Result<ParsedAnswers, String> {
     let mut out = ParsedAnswers::default();
     for (lineno, raw) in body.lines().enumerate() {
@@ -79,6 +84,11 @@ pub fn parse_answers(body: &str) -> Result<ParsedAnswers, String> {
         let key = key.trim().to_string();
         if key.is_empty() {
             return Err(format!("line {}: empty key in '{raw}'", lineno + 1));
+        }
+        // A derived var the tool emits itself: recognized, recomputed, never
+        // collected — skip it without parsing its value or warning.
+        if crate::spec::is_derived(&key) {
+            continue;
         }
         let value = unquote_shell_value(value)
             .map_err(|e| format!("line {}: {e} in '{raw}'", lineno + 1))?;
@@ -295,8 +305,13 @@ mod tests {
     #[test]
     fn round_trips_generate_then_parse_for_single_quote_value() {
         // G3 regression: feeding a generated cpd_vars.sh back as --answers must
-        // reproduce every value exactly, including ones with single quotes.
+        // reproduce every COLLECTED value exactly, including ones with single
+        // quotes. The generated file also carries DERIVED vars (SERVER_ARGUMENTS
+        // etc.); those reparse as their literal expr text and are not part of the
+        // collected config — assert the collected values match and the only
+        // extra keys are the known derived ones.
         use crate::generate::{render, Config};
+        use crate::spec::DERIVED;
         let tricky = [
             ("OCP_PASSWORD", "it's"),
             ("IBM_ENTITLEMENT_KEY", "pa'ss\"w$rd `x` end"),
@@ -304,7 +319,6 @@ mod tests {
         ];
         let mut config = Config::new();
         for spec in SPEC {
-            // Give SPEC vars a default; override the tricky ones below.
             config.insert(spec.name.to_string(), format!("v-{}", spec.name));
         }
         for (k, v) in tricky {
@@ -312,8 +326,21 @@ mod tests {
         }
         let rendered = render(&config);
         let reparsed = parse_answers(&rendered).unwrap();
-        assert!(reparsed.warnings.is_empty(), "all keys are SPEC keys");
-        assert_eq!(reparsed.values, config, "generate -> parse must round-trip");
+
+        // Derived vars are recognized-but-ignored: they must NOT appear as
+        // collected values and must NOT raise warnings.
+        for d in DERIVED {
+            assert!(
+                !reparsed.values.contains_key(d.name),
+                "derived {} must not be collected",
+                d.name
+            );
+        }
+        assert!(reparsed.warnings.is_empty(), "no warnings: {:?}", reparsed.warnings);
+
+        // The reparsed collected set equals the original config exactly,
+        // including single-quote-bearing values.
+        assert_eq!(reparsed.values, config, "collected vars must round-trip exactly");
     }
 
     #[test]
@@ -326,6 +353,18 @@ mod tests {
         assert_eq!(parsed.values["VERSION"], "5.4.1");
         // The duplicate is a known SPEC key, so no unknown-key warning fires.
         assert!(parsed.warnings.is_empty(), "warnings: {:?}", parsed.warnings);
+    }
+
+    #[test]
+    fn derived_keys_are_ignored_without_warning() {
+        // Derived var lines (as a generated file carries them) are recognized,
+        // not collected, and never warned about.
+        let body = "SERVER_ARGUMENTS=\"--server=${OCP_URL}\"\n\
+                    OLM_UTILS_IMAGE=icr.io/cpopen/cpd/olm-utils-v4:${VERSION}\n\
+                    PROJECT_INST_BR_SVC=${PROJECT_CPD_INST_OPERATORS}-br-svc\n";
+        let parsed = parse_answers(body).unwrap();
+        assert!(parsed.values.is_empty(), "derived vars must not be collected");
+        assert!(parsed.warnings.is_empty(), "derived vars must not warn");
     }
 
     #[test]
@@ -395,11 +434,14 @@ mod tests {
         // NeverPrompter panics if called; reaching the end proves no prompt.
         let config =
             collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
-        // Nothing supplied, nothing prompted. The only entry present is VERSION,
-        // filled from its spec default; every other (defaultless) var is absent
-        // so the validator will flag it missing.
-        assert_eq!(config.keys().collect::<Vec<_>>(), vec!["VERSION"]);
+        // Nothing supplied, nothing prompted. The only entries present are the
+        // two defaulted vars (VERSION, PATCH_ID); every other (defaultless) var
+        // is absent so the validator will flag it missing.
+        let mut keys: Vec<&String> = config.keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["PATCH_ID", "VERSION"]);
         assert_eq!(config["VERSION"], "5.4.0");
+        assert_eq!(config["PATCH_ID"], "latest");
     }
 
     // ---- collect: VERSION default ----
