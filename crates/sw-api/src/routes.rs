@@ -27,6 +27,7 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/:id/pause", post(pause_run))
         .route("/runs/:id/resume", post(resume_run))
         .route("/runs/:id/retry", post(retry_run))
+        .route("/runs/:id/destroy", post(destroy_run))
         .route("/runs/:id/inputs", post(submit_inputs))
         .route("/runs/:id/events", get(events))
         .route("/catalog/hyperscalers", get(get_hyperscalers))
@@ -133,6 +134,27 @@ async fn retry_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
     let orch = state.orch.clone();
     tokio::spawn(async move {
         let _ = orch.retry(&id).await;
+    });
+    StatusCode::ACCEPTED.into_response()
+}
+
+/// Tear down the provisioned cluster (best-effort, runs `openshift-install
+/// destroy cluster`). Important for paid clouds so resources aren't orphaned.
+async fn destroy_run(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    use sw_mod_provision::{AwsProvisioner, Provisioner};
+    let orch = state.orch.clone();
+    tokio::spawn(async move {
+        let artifacts = orch.store().artifacts_dir(&id);
+        let ctx = sw_core::StepContext::with_artifacts(
+            id.clone(),
+            "mod-provision/destroy".to_string(),
+            orch.command_runner(),
+            orch.bus().clone(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            artifacts,
+        );
+        let _ = AwsProvisioner::new().destroy(&ctx).await;
     });
     StatusCode::ACCEPTED.into_response()
 }

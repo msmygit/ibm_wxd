@@ -52,6 +52,22 @@ fn kubeconfig_path(ctx: &StepContext) -> std::path::PathBuf {
     cluster_dir(ctx).join("auth").join("kubeconfig")
 }
 
+/// Copy the installer's kubeconfig to the run's standard location
+/// (`<artifacts>/kubeconfig`) so downstream modules' `ctx.run_in_cluster(...)`
+/// targets the cluster we just created. Best-effort; logs on failure.
+fn publish_kubeconfig(ctx: &StepContext) {
+    let src = kubeconfig_path(ctx);
+    let dst = ctx.kubeconfig_path();
+    match std::fs::copy(&src, &dst) {
+        Ok(_) => ctx.log(format!("published kubeconfig to {}", dst.display())),
+        Err(e) => ctx.log(format!(
+            "warning: could not publish kubeconfig from {} to {}: {e}",
+            src.display(),
+            dst.display()
+        )),
+    }
+}
+
 /// AWS implementation of [`Provisioner`] using `openshift-install` IPI.
 ///
 /// The installer reads `install-config.yaml` from the cluster dir (written by
@@ -77,6 +93,7 @@ impl Provisioner for AwsProvisioner {
         // Idempotency: a kubeconfig means the cluster is already provisioned.
         if kubeconfig_path(ctx).exists() {
             ctx.log("cluster already provisioned");
+            publish_kubeconfig(ctx);
             ctx.progress(100);
             return StepOutcome::Completed;
         }
@@ -95,6 +112,7 @@ impl Provisioner for AwsProvisioner {
         match ctx.runner().run("openshift-install", &args).await {
             Ok(out) if out.success() => {
                 ctx.log("cluster provisioned");
+                publish_kubeconfig(ctx);
                 ctx.progress(100);
                 StepOutcome::Completed
             }
@@ -450,13 +468,25 @@ impl Step for WriteInstallConfigStep {
         let pull_secret = match ctx.secret("pull_secret") {
             Some(s) if !s.is_empty() => s,
             _ => {
-                return StepOutcome::Failed {
-                    error: "pull_secret is required to render install-config.yaml"
+                // Request it inline so the UI can collect it as a masked field.
+                return StepOutcome::NeedsInput {
+                    prompt: "Paste your Red Hat pull secret (from \
+                             console.redhat.com/openshift/install/pull-secret). \
+                             Optionally add an SSH public key for node debugging."
                         .to_string(),
-                    next_steps: vec![
-                        "Provide the Red Hat pull secret (from \
-                         console.redhat.com/openshift/install/pull-secret)."
-                            .to_string(),
+                    fields: vec![
+                        InputField {
+                            key: "pull_secret".to_string(),
+                            label: "Red Hat pull secret (JSON)".to_string(),
+                            secret: true,
+                            default: None,
+                        },
+                        InputField {
+                            key: "ssh_key".to_string(),
+                            label: "SSH public key (optional)".to_string(),
+                            secret: false,
+                            default: None,
+                        },
                     ],
                 };
             }

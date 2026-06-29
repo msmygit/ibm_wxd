@@ -77,6 +77,14 @@ paths:
       responses:
         '202': { description: Retry started }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /runs/{id}/destroy:
+    post:
+      tags: [runs]
+      summary: Tear down the provisioned cluster (openshift-install destroy)
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '202': { description: Teardown started }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /runs/{id}/inputs:
     post:
       tags: [runs]

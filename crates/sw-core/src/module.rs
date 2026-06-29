@@ -2,7 +2,7 @@
 //! `Step`s. A step runs against a `StepContext` (inputs, command runner, event
 //! emitter) and returns a `StepOutcome`.
 
-use crate::command::CommandRunner;
+use crate::command::{CommandOutput, CommandRunner};
 use crate::event::{Event, EventBus};
 use crate::model::{StepId, StepOutcome, StepStatus};
 use async_trait::async_trait;
@@ -66,6 +66,28 @@ impl StepContext {
     /// install-config.yaml, generated `cpd_vars.sh`, and logs here.
     pub fn artifacts_dir(&self) -> &Path {
         &self.artifacts_dir
+    }
+
+    /// Standard location of the run's kubeconfig (`<artifacts>/kubeconfig`). The
+    /// provisioning module writes the freshly-created cluster's kubeconfig here
+    /// (and the existing-cluster path drops a user-supplied one here), so every
+    /// downstream cluster command can target the right cluster.
+    pub fn kubeconfig_path(&self) -> PathBuf {
+        self.artifacts_dir.join("kubeconfig")
+    }
+
+    /// Run a cluster-targeting command (`oc`, `cpd-cli`, …) with `KUBECONFIG`
+    /// pointed at this run's kubeconfig. Use this for anything that talks to the
+    /// provisioned cluster so steps don't depend on the caller's shell session.
+    pub async fn run_in_cluster(
+        &self,
+        program: &str,
+        args: &[String],
+    ) -> std::io::Result<CommandOutput> {
+        let kc = self.kubeconfig_path().to_string_lossy().into_owned();
+        self.runner
+            .run_with_env(program, args, &[("KUBECONFIG".to_string(), kc)])
+            .await
     }
 
     /// A non-secret input value collected earlier in the run.
@@ -163,5 +185,58 @@ mod tests {
         // First event is the log line.
         let e = rx.recv().await.unwrap();
         assert!(matches!(e, Event::Log { .. }));
+    }
+
+    #[test]
+    fn kubeconfig_path_is_under_artifacts() {
+        let ctx = StepContext::with_artifacts(
+            "r".into(),
+            "m/s".into(),
+            Arc::new(MockCommandRunner::new(vec![])),
+            EventBus::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            PathBuf::from("/tmp/run-artifacts"),
+        );
+        assert_eq!(ctx.kubeconfig_path(), PathBuf::from("/tmp/run-artifacts/kubeconfig"));
+    }
+
+    /// A runner that records the env it was handed, to prove run_in_cluster
+    /// injects KUBECONFIG.
+    #[derive(Default)]
+    struct EnvSpy {
+        last_env: std::sync::Mutex<Vec<(String, String)>>,
+    }
+    #[async_trait]
+    impl CommandRunner for EnvSpy {
+        async fn run(&self, _p: &str, _a: &[String]) -> std::io::Result<crate::command::CommandOutput> {
+            Ok(crate::command::CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+        }
+        async fn run_with_env(
+            &self,
+            _p: &str,
+            _a: &[String],
+            env: &[(String, String)],
+        ) -> std::io::Result<crate::command::CommandOutput> {
+            *self.last_env.lock().unwrap() = env.to_vec();
+            self.run(_p, _a).await
+        }
+    }
+
+    #[tokio::test]
+    async fn run_in_cluster_sets_kubeconfig_env() {
+        let spy = Arc::new(EnvSpy::default());
+        let ctx = StepContext::with_artifacts(
+            "r".into(),
+            "m/s".into(),
+            spy.clone(),
+            EventBus::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            PathBuf::from("/tmp/run-x"),
+        );
+        ctx.run_in_cluster("oc", &["whoami".into()]).await.unwrap();
+        let env = spy.last_env.lock().unwrap().clone();
+        assert_eq!(env, vec![("KUBECONFIG".to_string(), "/tmp/run-x/kubeconfig".to_string())]);
     }
 }

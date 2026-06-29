@@ -121,6 +121,11 @@ function renderRun(run) {
   $("#pause-btn").disabled = run.status !== "running";
   $("#resume-btn").disabled = run.status !== "paused";
   $("#retry-btn").disabled = run.status !== "failed";
+  // Destroy is available once a cluster may exist (i.e. provisioning ran).
+  const provisionRan = run.steps.some(
+    (s) => s.id === "mod-provision/create-cluster" && s.status === "completed"
+  );
+  $("#destroy-btn").disabled = !provisionRan;
 
   // Input panel.
   const inputPanel = $("#input-panel");
@@ -236,6 +241,14 @@ $("#resume-btn").addEventListener("click", async () => {
 });
 $("#retry-btn").addEventListener("click", async () => {
   if (currentRunId) await api(`/runs/${currentRunId}/retry`, { method: "POST" }).catch(() => {});
+});
+$("#destroy-btn").addEventListener("click", async () => {
+  if (!currentRunId) return;
+  if (!window.confirm("Destroy the provisioned OpenShift cluster? This removes its AWS resources.")) return;
+  banner("info", "Destroying cluster — watch the log for progress.");
+  await api(`/runs/${currentRunId}/destroy`, { method: "POST" }).catch((e) =>
+    banner("fail", `Could not start teardown: ${e.message}`)
+  );
 });
 
 // ---- boot -----------------------------------------------------------------

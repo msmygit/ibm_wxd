@@ -43,8 +43,8 @@ impl Step for PreflightHub {
                 }
             }
         }
-        // Authenticated session?
-        match ctx.runner().run("oc", &["whoami".to_string()]).await {
+        // Authenticated session against the run's cluster?
+        match ctx.run_in_cluster("oc", &["whoami".to_string()]).await {
             Ok(o) if o.success() => {}
             _ => {
                 return StepOutcome::Failed {
@@ -92,8 +92,7 @@ impl Step for InstallOperators {
 
         // check-then-act: are operators already reconciled?
         if let Ok(o) = ctx
-            .runner()
-            .run("oc", &["get".into(), "csv".into(), "-n".into(), operators_ns.clone()])
+            .run_in_cluster("oc", &["get".into(), "csv".into(), "-n".into(), operators_ns.clone()])
             .await
         {
             if o.success() && o.stdout.contains("Succeeded") {
@@ -110,7 +109,7 @@ impl Step for InstallOperators {
             format!("--release={version}"),
             format!("--cpd_operator_ns={operators_ns}"),
         ];
-        match ctx.runner().run("cpd-cli", &args).await {
+        match ctx.run_in_cluster("cpd-cli", &args).await {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
@@ -147,8 +146,7 @@ impl Step for InstallControlPlane {
         let version = input_or(ctx, "VERSION", DEFAULT_VERSION);
 
         if let Ok(o) = ctx
-            .runner()
-            .run("oc", &["get".into(), "ZenService".into(), "-n".into(), operands_ns.clone()])
+            .run_in_cluster("oc", &["get".into(), "ZenService".into(), "-n".into(), operands_ns.clone()])
             .await
         {
             if o.success() && o.stdout.contains("Completed") {
@@ -167,7 +165,7 @@ impl Step for InstallControlPlane {
             format!("--cpd_instance_ns={operands_ns}"),
             format!("--cpd_operator_ns={operators_ns}"),
         ];
-        match ctx.runner().run("cpd-cli", &args).await {
+        match ctx.run_in_cluster("cpd-cli", &args).await {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
@@ -202,8 +200,7 @@ impl Step for WaitReady {
         let operands_ns = input_or(ctx, "PROJECT_CPD_INST_OPERANDS", "cpd-instance");
         ctx.log("checking control-plane readiness");
         match ctx
-            .runner()
-            .run(
+            .run_in_cluster(
                 "oc",
                 &[
                     "get".into(),
