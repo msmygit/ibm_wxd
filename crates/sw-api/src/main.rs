@@ -26,8 +26,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
 
-    println!("\n  watsonx.data Easy Installer");
-    println!("  ---------------------------");
+    println!("\n  IBM self-managed software Easy Installer");
+    println!("  ---------------------------------------");
     println!("  Open this URL in your browser (the token authenticates the UI):\n");
     println!("    http://127.0.0.1:{}/?token={}\n", bound.port(), token);
     println!("  API docs:  http://127.0.0.1:{}/api/openapi.yaml", bound.port());

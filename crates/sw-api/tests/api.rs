@@ -219,5 +219,5 @@ async fn ui_index_is_served_at_root() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
-    assert!(body.contains("watsonx.data Easy Installer"));
+    assert!(body.contains("IBM self-managed software Easy Installer"));
 }

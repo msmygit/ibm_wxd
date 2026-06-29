@@ -176,7 +176,41 @@ button.ghost { background: transparent; }
   color: var(--ink);
 }
 
+.icon-btn { font-size: 18px; line-height: 1; padding: 8px 12px; }
+.req { color: var(--fail); font-weight: 700; }
+
+/* Prerequisites panel */
+.prereqs { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+.pr-row {
+  display: grid;
+  grid-template-columns: 96px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pr-badge {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.pr-badge.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.pr-badge.missing { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.pr-badge.warn { background: color-mix(in srgb, var(--fail) 16%, transparent); color: var(--fail); }
+.pr-name { font-weight: 500; }
+.pr-detail { font-size: 12px; text-align: right; }
+
+/* Credentials: hide non-selected provider groups */
+.cred-group[hidden] { display: none; }
+
 .chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.chips label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.chip.disabled label { cursor: not-allowed; }
 .chip {
   padding: 6px 12px;
   border-radius: 999px;

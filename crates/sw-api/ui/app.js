@@ -46,14 +46,25 @@ let currentRunId = null;
 let eventSource = null;
 
 // ---- theme ----------------------------------------------------------------
+function effectiveTheme() {
+  const t = document.documentElement.getAttribute("data-theme");
+  if (t === "dark" || t === "light") return t;
+  // "auto": follow the OS preference.
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+function updateThemeIcon() {
+  // Show the icon for the mode you'll switch INTO: moon while light, sun while dark.
+  $("#theme-icon").textContent = effectiveTheme() === "dark" ? "☀️" : "🌙";
+}
 (function initTheme() {
   const saved = localStorage.getItem("wxd_theme");
   if (saved) document.documentElement.setAttribute("data-theme", saved);
+  updateThemeIcon();
   $("#theme-toggle").addEventListener("click", () => {
-    const cur = document.documentElement.getAttribute("data-theme");
-    const next = cur === "dark" ? "light" : "dark";
+    const next = effectiveTheme() === "dark" ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", next);
     localStorage.setItem("wxd_theme", next);
+    updateThemeIcon();
   });
 })();
 
@@ -66,6 +77,17 @@ function banner(kind, message) {
 }
 
 // ---- catalog --------------------------------------------------------------
+// Show only the credential group for the selected cloud provider.
+function showCredsFor(provider) {
+  for (const group of document.querySelectorAll("#creds-form .cred-group")) {
+    group.hidden = group.dataset.provider !== provider;
+  }
+}
+function selectedProvider() {
+  const checked = document.querySelector('input[name="hyperscaler"]:checked');
+  return checked ? checked.value : "aws";
+}
+
 async function loadCatalog() {
   try {
     const [hs, svcs] = await Promise.all([
@@ -74,11 +96,25 @@ async function loadCatalog() {
     ]);
     const hsList = $("#hyperscalers");
     clear(hsList);
+    let firstEnabled = null;
     for (const h of hs) {
-      const cls = "chip" + (h.enabled ? "" : " disabled");
-      const label = h.enabled ? h.name : `${h.name} (coming soon)`;
-      hsList.appendChild(el("li", { class: cls, text: label }));
+      const radio = el("input", {
+        attrs: { type: "radio", name: "hyperscaler", value: h.id },
+      });
+      if (!h.enabled) radio.disabled = true;
+      if (h.enabled && firstEnabled === null) {
+        firstEnabled = h.id;
+        radio.checked = true;
+      }
+      radio.addEventListener("change", () => showCredsFor(h.id));
+      const text = h.enabled ? h.name : `${h.name} (coming soon)`;
+      const li = el("li", { class: "chip" + (h.enabled ? "" : " disabled") }, [
+        el("label", {}, [radio, el("span", { text: text })]),
+      ]);
+      hsList.appendChild(li);
     }
+    showCredsFor(firstEnabled || "aws");
+
     const svcList = $("#services");
     clear(svcList);
     for (const s of svcs) {
@@ -90,6 +126,60 @@ async function loadCatalog() {
     banner("fail", `Could not load catalog: ${e.message}`);
   }
 }
+
+// ---- prerequisites --------------------------------------------------------
+function renderPrereqs(list) {
+  const ul = $("#prereqs-list");
+  clear(ul);
+  let anyMissing = false;
+  for (const t of list) {
+    const ok = t.present;
+    if (!ok) anyMissing = true;
+    const badge = el("span", {
+      class: "pr-badge " + (ok ? "ok" : t.installable ? "missing" : "warn"),
+      text: ok ? "installed" : t.installable ? "missing" : "not found",
+    });
+    const name = el("span", { class: "pr-name", text: t.title });
+    const detail = el("span", { class: "pr-detail muted", text: t.detail || (ok ? "" : t.installable ? "will be installed into ~/.wxd/bin" : "install manually") });
+    ul.appendChild(el("li", { class: "pr-row" }, [badge, name, detail]));
+  }
+  $("#prereqs-install-btn").disabled = !anyMissing;
+  return anyMissing;
+}
+
+function prereqBanner(kind, msg) {
+  const b = $("#prereqs-banner");
+  b.hidden = false;
+  b.className = `banner ${kind}`;
+  b.textContent = msg;
+}
+
+async function loadPrereqs() {
+  try {
+    const list = await api("/prereqs");
+    const missing = renderPrereqs(list);
+    if (!missing) prereqBanner("ok", "All prerequisites are installed.");
+    else $("#prereqs-banner").hidden = true;
+  } catch (e) {
+    prereqBanner("fail", `Could not check prerequisites: ${e.message}`);
+  }
+}
+
+$("#prereqs-refresh-btn").addEventListener("click", loadPrereqs);
+$("#prereqs-install-btn").addEventListener("click", async () => {
+  const btn = $("#prereqs-install-btn");
+  btn.disabled = true;
+  prereqBanner("info", "Installing missing prerequisites into ~/.wxd/bin … this can take a minute.");
+  try {
+    const list = await api("/prereqs/install", { method: "POST" });
+    const missing = renderPrereqs(list);
+    prereqBanner(missing ? "fail" : "ok", missing
+      ? "Some prerequisites could not be installed — see the rows above."
+      : "All prerequisites installed.");
+  } catch (e) {
+    prereqBanner("fail", `Install failed: ${e.message}`);
+  }
+});
 
 // ---- run rendering --------------------------------------------------------
 function renderRun(run) {
@@ -237,9 +327,16 @@ function collectCredentials() {
 
 $("#start-btn").addEventListener("click", async () => {
   try {
+    const credentials = collectCredentials();
+    // IBM entitlement key is required to install Software Hub / watsonx.data.
+    if (!credentials.IBM_ENTITLEMENT_KEY) {
+      banner("fail", "IBM entitlement key is required — enter it under Cloud credentials.");
+      const field = document.querySelector('#creds-form input[data-cred="IBM_ENTITLEMENT_KEY"]');
+      if (field) field.focus();
+      return;
+    }
     $("#log").textContent = "";
     const mode = selectedMode();
-    const credentials = collectCredentials();
     const run = await api("/runs", {
       method: "POST",
       body: JSON.stringify({ mode, credentials }),
@@ -277,4 +374,5 @@ $("#destroy-btn").addEventListener("click", async () => {
 });
 
 // ---- boot -----------------------------------------------------------------
+loadPrereqs();
 loadCatalog();

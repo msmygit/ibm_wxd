@@ -7,7 +7,8 @@
 //! so it stays hermetically testable with a mock runner.
 
 use async_trait::async_trait;
-use sw_core::{Module, Step, StepContext, StepOutcome};
+use serde::Serialize;
+use sw_core::{CommandRunner, Module, Step, StepContext, StepOutcome};
 
 /// Per-platform download tokens derived from the build target.
 struct Platform {
@@ -93,8 +94,9 @@ fn cpd_script(p: &Platform) -> String {
     )
 }
 
-/// One installable tool.
-struct ToolStep {
+/// One installable tool: how to detect it and (optionally) how to install it.
+#[derive(Clone)]
+struct ToolSpec {
     id: &'static str,
     title: &'static str,
     /// Presence probe: program + args (exit 0 means "already installed").
@@ -105,53 +107,160 @@ struct ToolStep {
     manual: Vec<String>,
 }
 
-impl ToolStep {
-    async fn present(&self, ctx: &StepContext) -> bool {
-        matches!(ctx.runner().run(self.probe.0, &self.probe.1).await, Ok(o) if o.success())
+/// The prerequisite tools for the current platform, in run order.
+fn specs() -> Vec<ToolSpec> {
+    let p = platform();
+    vec![
+        ToolSpec {
+            id: "oc",
+            title: "OpenShift CLI (oc)",
+            probe: ("oc", vec!["version".into(), "--client".into()]),
+            install: Some(oc_script(&p)),
+            manual: vec!["Download `oc` from console.redhat.com/openshift/downloads.".into()],
+        },
+        ToolSpec {
+            id: "helm",
+            title: "Helm",
+            probe: ("helm", vec!["version".into(), "--short".into()]),
+            install: Some(helm_script(&p)),
+            manual: vec!["Install Helm 3.18+ from helm.sh.".into()],
+        },
+        ToolSpec {
+            id: "openshift-install",
+            title: "OpenShift installer",
+            probe: ("openshift-install", vec!["version".into()]),
+            install: Some(ois_script(&p)),
+            manual: vec!["Download `openshift-install` from console.redhat.com/openshift/install/aws/installer-provisioned.".into()],
+        },
+        ToolSpec {
+            id: "cpd-cli",
+            title: "Cloud Pak for Data CLI (cpd-cli)",
+            probe: ("cpd-cli", vec!["version".into()]),
+            install: Some(cpd_script(&p)),
+            manual: vec!["Download cpd-cli from github.com/IBM/cpd-cli/releases (match the 5.4.x release).".into()],
+        },
+        ToolSpec {
+            id: "aws",
+            title: "AWS CLI",
+            probe: ("aws", vec!["--version".into()]),
+            install: None, // installing AWS CLI needs admin rights; check-only.
+            manual: vec!["Install the AWS CLI v2 from aws.amazon.com/cli (needs admin rights).".into()],
+        },
+    ]
+}
+
+/// Reported status of one prerequisite tool (for the UI's prerequisites panel).
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolStatus {
+    pub id: String,
+    pub title: String,
+    pub present: bool,
+    /// Whether the installer can auto-install it (false for check-only tools).
+    pub installable: bool,
+    /// Version string / short detail when present.
+    pub detail: String,
+}
+
+async fn probe(runner: &dyn CommandRunner, spec: &ToolSpec) -> (bool, String) {
+    match runner.run(spec.probe.0, &spec.probe.1).await {
+        Ok(o) if o.success() => {
+            let detail = o
+                .stdout
+                .lines()
+                .chain(o.stderr.lines())
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            (true, detail)
+        }
+        _ => (false, String::new()),
     }
+}
+
+/// Check every prerequisite tool's presence (no installation).
+pub async fn check_all(runner: &dyn CommandRunner) -> Vec<ToolStatus> {
+    let mut out = Vec::new();
+    for spec in specs() {
+        let (present, detail) = probe(runner, &spec).await;
+        out.push(ToolStatus {
+            id: spec.id.into(),
+            title: spec.title.into(),
+            present,
+            installable: spec.install.is_some(),
+            detail,
+        });
+    }
+    out
+}
+
+/// Install one tool by id (installs unconditionally, then verifies). The caller
+/// decides whether it was missing first.
+pub async fn install_one(runner: &dyn CommandRunner, id: &str) -> Result<(), String> {
+    let Some(spec) = specs().into_iter().find(|s| s.id == id) else {
+        return Err(format!("unknown tool: {id}"));
+    };
+    let Some(script) = spec.install.clone() else {
+        return Err(format!("{} cannot be auto-installed. {}", spec.id, spec.manual.join(" ")));
+    };
+    match runner.run("sh", &["-c".to_string(), script]).await {
+        Ok(o) if o.success() => {
+            if probe(runner, &spec).await.0 {
+                Ok(())
+            } else {
+                Err(format!("{} installed but did not verify", spec.id))
+            }
+        }
+        Ok(o) => Err(format!("installing {} failed (exit {}): {}", spec.id, o.status, o.stderr.trim())),
+        Err(e) => Err(format!("could not run installer for {}: {e}", spec.id)),
+    }
+}
+
+/// Install every missing, installable tool; return the resulting status list.
+pub async fn install_missing(runner: &dyn CommandRunner) -> Vec<ToolStatus> {
+    for spec in specs() {
+        if spec.install.is_some() && !probe(runner, &spec).await.0 {
+            let _ = install_one(runner, spec.id).await;
+        }
+    }
+    check_all(runner).await
+}
+
+/// A prerequisite step wrapping one spec (used inside an install run).
+struct ToolStep {
+    spec: ToolSpec,
 }
 
 #[async_trait]
 impl Step for ToolStep {
     fn id(&self) -> &str {
-        self.id
+        self.spec.id
     }
     fn title(&self) -> &str {
-        self.title
+        self.spec.title
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        if self.present(ctx).await {
-            ctx.log(format!("{} already installed", self.probe.0));
+        if probe(ctx.runner(), &self.spec).await.0 {
+            ctx.log(format!("{} already installed", self.spec.id));
             ctx.progress(100);
             return StepOutcome::Completed;
         }
-        let Some(script) = &self.install else {
+        if self.spec.install.is_none() {
             return StepOutcome::Failed {
-                error: format!("{} is not installed and cannot be auto-installed", self.probe.0),
-                next_steps: self.manual.clone(),
+                error: format!("{} is not installed and cannot be auto-installed", self.spec.id),
+                next_steps: self.spec.manual.clone(),
             };
-        };
-        ctx.log(format!("installing {} into ~/.wxd/bin …", self.probe.0));
-        match ctx.runner().run("sh", &["-c".to_string(), script.clone()]).await {
-            Ok(o) if o.success() => {
-                if self.present(ctx).await {
-                    ctx.log(format!("{} installed", self.probe.0));
-                    ctx.progress(100);
-                    StepOutcome::Completed
-                } else {
-                    StepOutcome::Failed {
-                        error: format!("{} installed but did not verify", self.probe.0),
-                        next_steps: self.manual.clone(),
-                    }
-                }
+        }
+        ctx.log(format!("installing {} into ~/.wxd/bin …", self.spec.id));
+        match install_one(ctx.runner(), self.spec.id).await {
+            Ok(()) => {
+                ctx.log(format!("{} installed", self.spec.id));
+                ctx.progress(100);
+                StepOutcome::Completed
             }
-            Ok(o) => StepOutcome::Failed {
-                error: format!("installing {} failed (exit {}): {}", self.probe.0, o.status, o.stderr.trim()),
-                next_steps: self.manual.clone(),
-            },
             Err(e) => StepOutcome::Failed {
-                error: format!("could not run installer for {}: {e}", self.probe.0),
-                next_steps: self.manual.clone(),
+                error: e,
+                next_steps: self.spec.manual.clone(),
             },
         }
     }
@@ -168,44 +277,10 @@ impl Module for PrereqsModule {
         "Install prerequisites"
     }
     fn steps(&self) -> Vec<Box<dyn Step>> {
-        let p = platform();
-        vec![
-            Box::new(ToolStep {
-                id: "oc",
-                title: "OpenShift CLI (oc)",
-                probe: ("oc", vec!["version".into(), "--client".into()]),
-                install: Some(oc_script(&p)),
-                manual: vec!["Download `oc` from console.redhat.com/openshift/downloads.".into()],
-            }),
-            Box::new(ToolStep {
-                id: "helm",
-                title: "Helm",
-                probe: ("helm", vec!["version".into(), "--short".into()]),
-                install: Some(helm_script(&p)),
-                manual: vec!["Install Helm 3.18+ from helm.sh.".into()],
-            }),
-            Box::new(ToolStep {
-                id: "openshift-install",
-                title: "OpenShift installer",
-                probe: ("openshift-install", vec!["version".into()]),
-                install: Some(ois_script(&p)),
-                manual: vec!["Download `openshift-install` from console.redhat.com/openshift/install/aws/installer-provisioned.".into()],
-            }),
-            Box::new(ToolStep {
-                id: "cpd-cli",
-                title: "Cloud Pak for Data CLI (cpd-cli)",
-                probe: ("cpd-cli", vec!["version".into()]),
-                install: Some(cpd_script(&p)),
-                manual: vec!["Download cpd-cli from github.com/IBM/cpd-cli/releases (match the 5.4.x release).".into()],
-            }),
-            Box::new(ToolStep {
-                id: "aws",
-                title: "AWS CLI",
-                probe: ("aws", vec!["--version".into()]),
-                install: None, // macOS/Linux installs need sudo; check-only with guidance.
-                manual: vec!["Install the AWS CLI v2 from aws.amazon.com/cli (needs admin rights).".into()],
-            }),
-        ]
+        specs()
+            .into_iter()
+            .map(|spec| Box::new(ToolStep { spec }) as Box<dyn Step>)
+            .collect()
     }
 }
 
@@ -231,11 +306,13 @@ mod tests {
     fn helm_step() -> ToolStep {
         let p = platform();
         ToolStep {
-            id: "helm",
-            title: "Helm",
-            probe: ("helm", vec!["version".into(), "--short".into()]),
-            install: Some(helm_script(&p)),
-            manual: vec!["manual".into()],
+            spec: ToolSpec {
+                id: "helm",
+                title: "Helm",
+                probe: ("helm", vec!["version".into(), "--short".into()]),
+                install: Some(helm_script(&p)),
+                manual: vec!["manual".into()],
+            },
         }
     }
 
@@ -287,19 +364,31 @@ mod tests {
 
     #[tokio::test]
     async fn check_only_tool_fails_with_guidance_when_absent() {
-        let p = platform();
         let aws = ToolStep {
-            id: "aws",
-            title: "AWS CLI",
-            probe: ("aws", vec!["--version".into()]),
-            install: None,
-            manual: vec!["install aws".into()],
+            spec: ToolSpec {
+                id: "aws",
+                title: "AWS CLI",
+                probe: ("aws", vec!["--version".into()]),
+                install: None,
+                manual: vec!["install aws".into()],
+            },
         };
-        let _ = &p;
         let runner = MockCommandRunner::new(vec![MockResponse::fail("aws --version", 127, "missing")]);
         match aws.run(&ctx(runner)).await {
             StepOutcome::Failed { next_steps, .. } => assert_eq!(next_steps, vec!["install aws".to_string()]),
             o => panic!("expected Failed, got {o:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn check_all_reports_status_for_every_tool() {
+        // Default mock → all probes succeed → all present.
+        let runner = MockCommandRunner::new(vec![]);
+        let statuses = check_all(&runner).await;
+        let ids: Vec<_> = statuses.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["oc", "helm", "openshift-install", "cpd-cli", "aws"]);
+        assert!(statuses.iter().all(|s| s.present));
+        // aws is the only check-only (non-installable) tool.
+        assert!(!statuses.iter().find(|s| s.id == "aws").unwrap().installable);
     }
 }

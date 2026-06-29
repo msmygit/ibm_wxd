@@ -33,6 +33,8 @@ pub fn router(state: AppState) -> Router {
         .route("/catalog/hyperscalers", get(get_hyperscalers))
         .route("/catalog/services", get(get_services))
         .route("/catalog/modes", get(get_modes))
+        .route("/prereqs", get(get_prereqs))
+        .route("/prereqs/install", post(install_prereqs))
         .route("/modules", get(get_modules))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
 
@@ -293,6 +295,18 @@ async fn get_modules(State(state): State<AppState>, Query(q): Query<ModeQuery>) 
 
 async fn get_modes(State(state): State<AppState>) -> Response {
     Json(state.orch.modes()).into_response()
+}
+
+/// Report which prerequisite CLIs are present/missing on this machine.
+async fn get_prereqs(State(state): State<AppState>) -> Response {
+    let runner = state.orch.command_runner();
+    Json(sw_mod_prereqs::check_all(runner.as_ref()).await).into_response()
+}
+
+/// Install every missing, auto-installable prerequisite, then report status.
+async fn install_prereqs(State(state): State<AppState>) -> Response {
+    let runner = state.orch.command_runner();
+    Json(sw_mod_prereqs::install_missing(runner.as_ref()).await).into_response()
 }
 
 async fn openapi() -> Response {
