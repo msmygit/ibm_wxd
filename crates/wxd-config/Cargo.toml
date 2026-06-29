@@ -1,0 +1,13 @@
+[package]
+name = "wxd-config"
+version = "0.1.0"
+edition = "2021"
+description = "Collect and validate watsonx.data install configuration, then generate a deterministic, source-able cpd_vars.sh"
+license = "Apache-2.0"
+repository = "https://github.com/pulsarventures/ibm_wxd"
+
+[[bin]]
+name = "wxd-config"
+path = "src/main.rs"
+
+[dependencies]

@@ -1,21 +1,35 @@
-[package]
-name = "wxd-config"
+[workspace]
+resolver = "2"
+members = [
+    "crates/wxd-config",
+    "crates/sw-core",
+    "crates/sw-api",
+    "crates/sw-mod-provision",
+    "crates/sw-mod-softwarehub",
+    "crates/sw-mod-services",
+    "crates/wxd-svc-watsonxdata",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "Collect and validate watsonx.data install configuration, then generate a deterministic, source-able cpd_vars.sh"
 license = "Apache-2.0"
 repository = "https://github.com/pulsarventures/ibm_wxd"
-readme = "README.md"
 
-[[bin]]
-name = "wxd-config"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
+sw-core = { path = "crates/sw-core" }
+wxd-config = { path = "crates/wxd-config" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process"] }
+axum = { version = "0.7", features = ["macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }
+tower-http = { version = "0.5", features = ["fs", "trace"] }
+futures = "0.3"
 
 [profile.release]
 opt-level = "z"
 lto = true
 strip = true
-panic = "abort"
 codegen-units = 1

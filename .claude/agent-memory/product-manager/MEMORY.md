@@ -1,0 +1,3 @@
+- [Product file location](product-file-location.md) — PRODUCT.md lives in main repo .buildpilot/, NOT in ticket worktrees
+- [Architecture is undecided](architecture-undecided.md) — Rust-core (PRODUCT.md) vs bash (TESTING.md) conflict; flag to dev/TA
+- [Hermetic test posture](hermetic-test-posture.md) — Why: no cluster on dev boxes; ACs must mock oc/cpd-cli

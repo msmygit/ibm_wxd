@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>watsonx.data Easy Installer</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◆</span>
+      <h1>watsonx.data Easy Installer</h1>
+    </div>
+    <button id="theme-toggle" class="ghost" type="button" aria-label="Toggle light/dark theme">
+      Theme
+    </button>
+  </header>
+
+  <main class="layout">
+    <section class="panel" id="control-panel" aria-labelledby="control-title">
+      <h2 id="control-title">Install run</h2>
+      <p class="muted" id="run-meta">No run yet.</p>
+      <div class="actions">
+        <button id="start-btn" class="primary" type="button">Start install</button>
+        <button id="pause-btn" class="ghost" type="button" disabled>Pause</button>
+        <button id="resume-btn" class="ghost" type="button" disabled>Resume</button>
+        <button id="retry-btn" class="warn" type="button" disabled>Retry failed step</button>
+      </div>
+      <div id="status-banner" class="banner" hidden></div>
+    </section>
+
+    <section class="panel" id="progress-panel" aria-labelledby="progress-title">
+      <h2 id="progress-title">Progress</h2>
+      <ol id="steps" class="steps" aria-live="polite"></ol>
+    </section>
+
+    <section class="panel" id="input-panel" aria-labelledby="input-title" hidden>
+      <h2 id="input-title">Input needed</h2>
+      <p id="input-prompt" class="muted"></p>
+      <form id="input-form" class="input-form"></form>
+    </section>
+
+    <section class="panel" id="log-panel" aria-labelledby="log-title">
+      <h2 id="log-title">Live log</h2>
+      <pre id="log" class="log" aria-live="polite"></pre>
+    </section>
+
+    <section class="panel" id="catalog-panel" aria-labelledby="catalog-title">
+      <h2 id="catalog-title">Catalog</h2>
+      <h3>Cloud providers</h3>
+      <ul id="hyperscalers" class="chips"></ul>
+      <h3>Services</h3>
+      <ul id="services" class="chips"></ul>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
