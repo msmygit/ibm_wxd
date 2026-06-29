@@ -33,6 +33,7 @@ pub fn router(state: AppState) -> Router {
         .route("/catalog/hyperscalers", get(get_hyperscalers))
         .route("/catalog/services", get(get_services))
         .route("/catalog/modes", get(get_modes))
+        .route("/catalog/provider-spec", get(get_provider_spec))
         .route("/prereqs", get(get_prereqs))
         .route("/prereqs/install", post(install_prereqs))
         .route("/modules", get(get_modules))
@@ -318,6 +319,17 @@ async fn get_modules(State(state): State<AppState>, Query(q): Query<ModeQuery>) 
 
 async fn get_modes(State(state): State<AppState>) -> Response {
     Json(state.orch.modes()).into_response()
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ProviderQuery {
+    provider: Option<String>,
+}
+
+/// Provider-specific cluster-spec fields for the new-cluster form (defaults to AWS).
+async fn get_provider_spec(Query(q): Query<ProviderQuery>) -> Response {
+    let provider = q.provider.unwrap_or_else(|| "aws".to_string());
+    Json(catalog::provider_spec(&provider)).into_response()
 }
 
 /// Report which prerequisite CLIs are present/missing on this machine.

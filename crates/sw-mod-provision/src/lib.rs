@@ -196,9 +196,15 @@ fn provision_failure_next_steps() -> Vec<String> {
     ]
 }
 
-/// The six inputs the cluster spec requires, with their v1 defaults for a
-/// watsonx.data-capable cluster. `base_domain` has no default — it must be a
-/// real Route53 hosted zone the user owns.
+/// The AWS cluster-spec fields, exposed so the API can render a provider-driven
+/// spec form. Other clouds add their own `Provisioner` + spec fields the same way.
+pub fn aws_spec_fields() -> Vec<InputField> {
+    spec_fields()
+}
+
+/// The cluster-spec inputs with their v1 defaults for a watsonx.data-capable
+/// cluster. `base_domain` has no default — it must be a real Route53 hosted zone
+/// the user owns.
 fn spec_fields() -> Vec<InputField> {
     vec![
         InputField {

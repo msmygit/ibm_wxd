@@ -21,6 +21,17 @@ pub struct Service {
     pub component: String,
 }
 
+/// The provider-specific cluster-spec fields for a new-cluster provision. Each
+/// cloud declares its own (instance/VM types, regions/zones, node counts, …); the
+/// UI renders the spec form from this, so adding a cloud is server-side only.
+/// Empty for clouds without a working provisioner yet.
+pub fn provider_spec(provider: &str) -> Vec<sw_core::InputField> {
+    match provider {
+        "aws" => sw_mod_provision::aws_spec_fields(),
+        _ => Vec::new(),
+    }
+}
+
 /// The hyperscaler catalog. AWS is enabled in v1; the rest are stubbed behind
 /// the same `Provisioner` interface.
 pub fn hyperscalers() -> Vec<Hyperscaler> {
@@ -41,28 +52,60 @@ pub fn services() -> Vec<Service> {
     let rows: &[(&str, &str, bool)] = &[
         ("watsonx.data", "watsonx_data", true),
         ("watsonx.data premium", "watsonx_data_premium", false),
-        ("watsonx.ai", "watsonx_ai", false),
-        ("watsonx Assistant", "watson_assistant", false),
-        ("watsonx Discovery (Watson Discovery)", "watson_discovery", false),
-        ("Watson Studio", "ws", false),
-        ("Watson Machine Learning", "wml", false),
-        ("IBM Knowledge Catalog", "wkc", false),
-        ("DataStage Enterprise", "datastage_ent", false),
-        ("DataStage Enterprise Plus", "datastage_ent_plus", false),
-        ("Db2", "db2oltp", false),
-        ("Db2 Warehouse", "db2wh", false),
-        ("Db2 Data Management Console", "dmc", false),
-        ("Analytics Engine (Apache Spark)", "analyticsengine", false),
+        ("AI Factsheets","factsheet", false),
+        ("Analytics Engine powered by Apache Spark","analyticsengine", false),
         ("Cognos Analytics", "cognos_analytics", false),
         ("Cognos Dashboards", "cognos_dashboards", false),
-        ("Planning Analytics", "planning_analytics", false),
+        ("Data Gate","datagate", false),
+        ("Data Privacy","dp", false),
+        ("Data Product Hub","dataproduct", false),
+        ("Data Refinery","datarefinery", false),
+        ("Data Replication","replication", false),
+        ("DataStage Enterprise","datastage_ent", false),
+        ("DataStage Enterprise Plus","", false),
+        ("Data Virtualization","dv", false),
+        ("Db2", "db2oltp", false),
+        ("Db2 Big SQL","bigsql", false),
+        ("Db2 Data Management Console","dmc", false),
+        ("Db2 Warehouse", "db2wh", false),
         ("Decision Optimization", "dods", false),
-        ("SPSS Modeler", "spss_modeler", false),
+        ("EDB Postgres","edb_cp4d,postgresql", false),
+        ("Execution Engine for Apache Hadoop","hee", false),
+        ("IBM Knowledge Catalog","ikc", false),
+        ("IBM Knowledge Catalog Premium","ikc_premium", false),
+        ("IBM Knowledge Catalog Standard","ikc_standard", false),
+        ("IBM Manta Data Lineage","datalineage", false),
+        ("IBM Master Data Management","match360", false),
+        ("IBM StreamSets","streamsets,ibm-streamsets-sdi", false),
+        ("Informix","informix_cp4d,informix", false),
+        ("MANTA Automated Data Lineage","mantaflow", false),
         ("OpenPages", "openpages", false),
-        ("Match 360 (MDM)", "match360", false),
-        ("Data Product Hub", "data_product_hub", false),
-        ("RStudio", "rstudio", false),
-        ("Product Master", "product_master", false),
+        ("Orchestration Pipelines","ws_pipelines", false),
+        ("Planning Analytics","planning_analytics", false),
+        ("Product Master", "productmaster", false),
+        ("RStudio® Server Runtimes","rstudio", false),
+        ("SPSS Modeler", "spss", false),
+        ("Synthetic Data Generator","syntheticdata", false),
+        ("Unstructured Data Integration","udp", false),
+        ("Voice Gateway","voice_gateway", false),
+        ("Watsonx Discovery", "watson_discovery", false),
+        ("Watson Machine Learning", "wml", false),
+        ("Watson OpenScale","openscale", false),
+        ("Watson Speech services","watson_speech", false),
+        ("Watson Studio", "ws", false),
+        ("Watson Studio Runtimes","ws_runtimes", false),
+        ("watsonx.ai", "watsonx_ai", false),
+        ("watsonx.ai model gateway","model_gateway", false),
+        ("watsonx Assistant", "watson_assistant", false),
+        ("watsonx BI","watsonx_bi_assistant", false),
+        ("watsonx Code Assistant","wca", false),
+        ("watsonx Code Assistant for Red Hat Ansible Lightspeed","wca_ansible", false),
+        ("watsonx Code Assistant for Z Agentic","wca_z_agentic", false),
+        ("watsonx Code Assistant for Z Understand","wca_z_understand", false),
+        ("watsonx.data integration","watsonx_dataintegration", false),
+        ("watsonx.data intelligence","watsonx_dataintelligence", false),
+        ("watsonx.governance","watsonx_governance", false),
+        ("watsonx Orchestrate","watsonx_orchestrate", false),
     ];
     rows.iter()
         .map(|(name, component, default_selected)| Service {
