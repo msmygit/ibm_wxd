@@ -32,32 +32,6 @@
       <div id="prereqs-banner" class="banner" hidden></div>
     </section>
 
-    <section class="panel" id="existing-panel" aria-labelledby="existing-title" hidden>
-      <h2 id="existing-title">Existing cluster connection</h2>
-      <p class="muted">
-        Connect the OpenShift cluster you already have. Provide its API URL and a
-        token <em>or</em> username/password, or point to a kubeconfig file on this
-        machine. Token/password are masked and stored only in the run's secret file.
-      </p>
-      <form id="existing-form" class="input-form">
-        <label><span>OpenShift API URL</span>
-          <input type="text" autocomplete="off" data-existing-input="OCP_URL"
-                 placeholder="https://api.cluster.example.com:6443" /></label>
-        <label><span>OpenShift console URL (optional)</span>
-          <input type="text" autocomplete="off" data-existing-input="OCP_CONSOLE_URL"
-                 placeholder="https://console-openshift-console.apps.cluster.example.com" /></label>
-        <label><span>API token</span>
-          <input type="password" autocomplete="new-password" data-existing-secret="OCP_TOKEN" /></label>
-        <label><span>…or username</span>
-          <input type="text" autocomplete="off" data-existing-input="OCP_USERNAME" /></label>
-        <label><span>…and password</span>
-          <input type="password" autocomplete="new-password" data-existing-secret="OCP_PASSWORD" /></label>
-        <label><span>…or path to a kubeconfig file</span>
-          <input type="text" autocomplete="off" data-existing-input="kubeconfig_source_path"
-                 placeholder="~/.kube/config" /></label>
-      </form>
-    </section>
-
     <section class="panel" id="catalog-panel" aria-labelledby="catalog-title">
       <h2 id="catalog-title">Catalog</h2>
       <div id="provider-block">
@@ -86,6 +60,61 @@
         <button id="destroy-btn" class="warn" type="button" disabled title="Runs openshift-install destroy cluster">Destroy cluster</button>
       </div>
       <div id="status-banner" class="banner" hidden></div>
+    </section>
+
+    <section class="panel" id="provision-panel" aria-labelledby="provision-title">
+      <h2 id="provision-title">Cluster spec (new AWS cluster)</h2>
+      <p class="muted">
+        Defaults are sized for a watsonx.data-capable cluster. Change anything,
+        then Start — these are written into <code>install-config.yaml</code>. The
+        <strong>name</strong> tags every AWS resource; <strong>base domain</strong>
+        must be a Route53 public hosted zone you own.
+      </p>
+      <form id="provision-form" class="input-form">
+        <label><span>Cluster / resource name</span>
+          <input type="text" autocomplete="off" data-provision-input="cluster_name" value="wxd" /></label>
+        <label><span>AWS region</span>
+          <input type="text" autocomplete="off" data-provision-input="region" value="us-east-1" /></label>
+        <label><span>Base domain (Route53 hosted zone)</span>
+          <input type="text" autocomplete="off" data-provision-input="base_domain"
+                 placeholder="example.com" /></label>
+        <label><span>Control plane instance type</span>
+          <input type="text" autocomplete="off" data-provision-input="control_plane_type" value="m6i.2xlarge" /></label>
+        <label><span>Control plane node count</span>
+          <input type="number" min="1" data-provision-input="control_plane_count" value="3" /></label>
+        <label><span>Worker instance type</span>
+          <input type="text" autocomplete="off" data-provision-input="worker_type" value="m6i.4xlarge" /></label>
+        <label><span>Worker node count</span>
+          <input type="number" min="1" data-provision-input="worker_count" value="3" /></label>
+        <label><span>Extra cloud tags (optional, key=value,key2=value2)</span>
+          <input type="text" autocomplete="off" data-provision-input="resource_tags" placeholder="owner=me,project=test" /></label>
+      </form>
+    </section>
+
+    <section class="panel" id="existing-panel" aria-labelledby="existing-title" hidden>
+      <h2 id="existing-title">Existing cluster connection</h2>
+      <p class="muted">
+        Connect the OpenShift cluster you already have. Provide its API URL and a
+        token <em>or</em> username/password, or point to a kubeconfig file on this
+        machine. Token/password are masked and stored only in the run's secret file.
+      </p>
+      <form id="existing-form" class="input-form">
+        <label><span>OpenShift API URL</span>
+          <input type="text" autocomplete="off" data-existing-input="OCP_URL"
+                 placeholder="https://api.cluster.example.com:6443" /></label>
+        <label><span>OpenShift console URL (optional)</span>
+          <input type="text" autocomplete="off" data-existing-input="OCP_CONSOLE_URL"
+                 placeholder="https://console-openshift-console.apps.cluster.example.com" /></label>
+        <label><span>API token</span>
+          <input type="password" autocomplete="new-password" data-existing-secret="OCP_TOKEN" /></label>
+        <label><span>…or username</span>
+          <input type="text" autocomplete="off" data-existing-input="OCP_USERNAME" /></label>
+        <label><span>…and password</span>
+          <input type="password" autocomplete="new-password" data-existing-secret="OCP_PASSWORD" /></label>
+        <label><span>…or path to a kubeconfig file</span>
+          <input type="text" autocomplete="off" data-existing-input="kubeconfig_source_path"
+                 placeholder="~/.kube/config" /></label>
+      </form>
     </section>
 
     <section class="panel" id="credentials-panel" aria-labelledby="credentials-title">
