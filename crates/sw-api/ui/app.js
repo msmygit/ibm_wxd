@@ -88,6 +88,35 @@ function selectedProvider() {
   return checked ? checked.value : "aws";
 }
 
+// Provider id -> display name, filled by loadCatalog().
+const PROVIDER_NAMES = {};
+
+// Render the cluster-spec form from the selected provider's field schema.
+async function renderProvisionSpec(provider) {
+  const form = $("#provision-form");
+  const title = $("#provision-title");
+  const name = PROVIDER_NAMES[provider] || provider.toUpperCase();
+  try {
+    const fields = await api(`/catalog/provider-spec?provider=${encodeURIComponent(provider)}`);
+    clear(form);
+    if (!fields.length) {
+      title.textContent = `Cluster spec (${name})`;
+      form.appendChild(el("p", { class: "muted", text: `No provisioner for ${name} yet — coming soon.` }));
+      return;
+    }
+    title.textContent = `Cluster spec (new ${name} cluster)`;
+    for (const f of fields) {
+      const input = el("input", {
+        attrs: { type: f.secret ? "password" : "text", "data-provision-input": f.key, autocomplete: "off" },
+      });
+      if (f.default != null) input.value = f.default;
+      form.appendChild(el("label", {}, [el("span", { text: f.label }), input]));
+    }
+  } catch (e) {
+    banner("fail", `Could not load cluster spec: ${e.message}`);
+  }
+}
+
 async function loadCatalog() {
   try {
     const [hs, svcs] = await Promise.all([
@@ -98,6 +127,7 @@ async function loadCatalog() {
     clear(hsList);
     let firstEnabled = null;
     for (const h of hs) {
+      PROVIDER_NAMES[h.id] = h.name;
       const radio = el("input", {
         attrs: { type: "radio", name: "hyperscaler", value: h.id },
       });
@@ -106,7 +136,10 @@ async function loadCatalog() {
         firstEnabled = h.id;
         radio.checked = true;
       }
-      radio.addEventListener("change", () => showCredsFor(h.id));
+      radio.addEventListener("change", () => {
+        showCredsFor(h.id);
+        renderProvisionSpec(h.id);
+      });
       const text = h.enabled ? h.name : `${h.name} (coming soon)`;
       const li = el("li", { class: "chip" + (h.enabled ? "" : " disabled") }, [
         el("label", {}, [radio, el("span", { text: text })]),
@@ -154,6 +187,7 @@ function applyMode() {
     for (const g of document.querySelectorAll("#creds-form .cred-group")) g.hidden = true;
   } else {
     showCredsFor(selectedProvider());
+    renderProvisionSpec(selectedProvider());
   }
 }
 for (const r of document.querySelectorAll('input[name="mode"]')) {
