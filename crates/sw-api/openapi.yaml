@@ -1,0 +1,278 @@
+openapi: 3.1.0
+info:
+  title: IBM Software Hub Installer API
+  version: 0.1.0
+  description: >
+    Contract-first REST + SSE surface for the IBM Software Hub installer
+    (watsonx.data and other entitled services). The server binds 127.0.0.1 only;
+    every /api route except the OpenAPI document requires a session token,
+    supplied as the `x-wxd-token` header or a `token=` query parameter.
+servers:
+  - url: http://127.0.0.1:0/api
+    description: Local installer (port and token are printed at launch)
+security:
+  - sessionToken: []
+tags:
+  - name: runs
+  - name: catalog
+  - name: meta
+paths:
+  /runs:
+    post:
+      tags: [runs]
+      summary: Create and start an install run
+      responses:
+        '201':
+          description: Run created and driving in the background
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    get:
+      tags: [runs]
+      summary: List all runs
+      responses:
+        '200':
+          description: All known runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RunState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /runs/{id}:
+    get:
+      tags: [runs]
+      summary: Inspect a run
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '200':
+          description: The run state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunState' }
+        '404': { description: No such run }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /runs/{id}/pause:
+    post:
+      tags: [runs]
+      summary: Request a pause (takes effect at the next step boundary)
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '202': { description: Pause requested }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /runs/{id}/resume:
+    post:
+      tags: [runs]
+      summary: Resume a paused run
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '202': { description: Resume started }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /runs/{id}/retry:
+    post:
+      tags: [runs]
+      summary: Retry the current failed step
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '202': { description: Retry started }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /runs/{id}/inputs:
+    post:
+      tags: [runs]
+      summary: Submit answers for an awaiting-input step
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InputsBody' }
+      responses:
+        '202': { description: Inputs accepted; run resumed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /runs/{id}/events:
+    get:
+      tags: [runs]
+      summary: Server-sent event stream of step status / logs / progress
+      description: >
+        A `text/event-stream`. Each event's `data` is one Event object. History
+        is replayed first, then live events follow.
+      parameters: [ { $ref: '#/components/parameters/RunId' } ]
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/Event' }
+  /catalog/hyperscalers:
+    get:
+      tags: [catalog]
+      summary: Available cloud providers
+      responses:
+        '200':
+          description: Hyperscaler catalog
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Hyperscaler' }
+  /catalog/services:
+    get:
+      tags: [catalog]
+      summary: Installable services (entitlement validated at install time)
+      responses:
+        '200':
+          description: Service catalog
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Service' }
+  /modules:
+    get:
+      tags: [meta]
+      summary: Registered modules and their step graphs
+      responses:
+        '200':
+          description: Module views
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ModuleView' }
+components:
+  securitySchemes:
+    sessionToken:
+      type: apiKey
+      in: header
+      name: x-wxd-token
+  parameters:
+    RunId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Unauthorized:
+      description: Missing or invalid session token
+  schemas:
+    RunStatus:
+      type: string
+      enum: [pending, running, awaiting_input, paused, failed, completed]
+    StepStatus:
+      type: string
+      enum: [pending, running, awaiting_input, completed, failed, skipped]
+    InputField:
+      type: object
+      required: [key, label]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        secret: { type: boolean, default: false }
+        default:
+          type: [string, 'null']
+    StepState:
+      type: object
+      required: [id, module_id, title, status]
+      properties:
+        id: { type: string }
+        module_id: { type: string }
+        title: { type: string }
+        status: { $ref: '#/components/schemas/StepStatus' }
+        error:
+          type: [string, 'null']
+        next_steps:
+          type: array
+          items: { type: string }
+    RunState:
+      type: object
+      required: [id, status, steps, cursor]
+      properties:
+        id: { type: string }
+        status: { $ref: '#/components/schemas/RunStatus' }
+        cursor: { type: integer, minimum: 0 }
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/StepState' }
+        inputs:
+          type: object
+          additionalProperties: { type: string }
+        pending_inputs:
+          type: array
+          items: { $ref: '#/components/schemas/InputField' }
+        pending_prompt:
+          type: [string, 'null']
+    InputsBody:
+      type: object
+      properties:
+        values:
+          type: object
+          additionalProperties: { type: string }
+        secrets:
+          type: object
+          additionalProperties: { type: string }
+    Event:
+      oneOf:
+        - $ref: '#/components/schemas/EventStepStatus'
+        - $ref: '#/components/schemas/EventLog'
+        - $ref: '#/components/schemas/EventProgress'
+        - $ref: '#/components/schemas/EventRunStatus'
+      discriminator:
+        propertyName: kind
+    EventStepStatus:
+      type: object
+      required: [kind, step, status]
+      properties:
+        kind: { const: step_status }
+        step: { type: string }
+        status: { $ref: '#/components/schemas/StepStatus' }
+    EventLog:
+      type: object
+      required: [kind, step, line]
+      properties:
+        kind: { const: log }
+        step: { type: string }
+        line: { type: string }
+    EventProgress:
+      type: object
+      required: [kind, step, percent]
+      properties:
+        kind: { const: progress }
+        step: { type: string }
+        percent: { type: integer, minimum: 0, maximum: 100 }
+    EventRunStatus:
+      type: object
+      required: [kind, status]
+      properties:
+        kind: { const: run_status }
+        status: { $ref: '#/components/schemas/RunStatus' }
+    Hyperscaler:
+      type: object
+      required: [id, name, enabled]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        enabled: { type: boolean }
+    Service:
+      type: object
+      required: [id, name, default_selected, component]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        default_selected: { type: boolean }
+        component: { type: string }
+    StepView:
+      type: object
+      required: [id, title]
+      properties:
+        id: { type: string }
+        title: { type: string }
+    ModuleView:
+      type: object
+      required: [id, title, steps]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/StepView' }

@@ -1,0 +1,17 @@
+[package]
+name = "sw-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Orchestrator spine for the IBM Software Hub installer: Module/Step framework, Run state machine, pause/resume, event bus, CommandRunner abstraction"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

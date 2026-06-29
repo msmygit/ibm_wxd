@@ -1,0 +1,31 @@
+[package]
+name = "sw-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Web server for the IBM Software Hub installer: OpenAPI 3.1.0 REST + SSE, serves the no-build UI. Binary: wxd"
+
+[[bin]]
+name = "wxd"
+path = "src/main.rs"
+
+[lib]
+name = "sw_api"
+path = "src/lib.rs"
+
+[dependencies]
+sw-core = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+tower-http = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

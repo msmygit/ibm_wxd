@@ -192,9 +192,9 @@ proceed). `wxd` itself needs only the Rust toolchain to build.
 ## 14. Open questions (non-blocking; resolve during planning)
 
 1. **Existing-cluster shortcut** — offer "I already have a cluster" to skip
-   provisioning (phases 1–4)? (Leaning yes; cheap and useful.)
+   provisioning (phases 1–4)? Answer: yes; cheap and useful.
 2. **Entitlement detection** — derive entitled services from the entitlement key, or
-   present a static catalog and validate at install? (Leaning static + validate-at-install.)
+   present a static catalog and validate at install? Answer: static + validate-at-install.
 3. **Default machine specs** — concrete defaults for control-plane/worker counts and
    instance types for a watsonx.data-capable cluster.
-4. **Secret storage** — file with `0600` for v1 vs OS keychain.
+4. **Secret storage** — file with `0600` for v1 vs OS keychain. Answer: Yes.
