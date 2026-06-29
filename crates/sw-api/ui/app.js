@@ -118,13 +118,45 @@ async function loadCatalog() {
     const svcList = $("#services");
     clear(svcList);
     for (const s of svcs) {
-      const cls = "chip" + (s.default_selected ? " default" : "");
-      const label = s.default_selected ? `${s.name} (default)` : s.name;
-      svcList.appendChild(el("li", { class: cls, text: label }));
+      const cb = el("input", {
+        attrs: { type: "checkbox", "data-component": s.component },
+      });
+      if (s.default_selected) cb.checked = true;
+      const label = el("label", { class: "check" }, [
+        cb,
+        el("span", { text: s.name }),
+        el("span", { class: "muted comp", text: s.component }),
+      ]);
+      svcList.appendChild(el("li", {}, [label]));
     }
   } catch (e) {
     banner("fail", `Could not load catalog: ${e.message}`);
   }
+}
+
+// Comma-joined component tokens for the checked services.
+function collectComponents() {
+  const out = [];
+  for (const cb of document.querySelectorAll('#services input[type="checkbox"]')) {
+    if (cb.checked) out.push(cb.dataset.component);
+  }
+  return out.join(",");
+}
+
+// Show/hide form sections based on the chosen run mode.
+function applyMode() {
+  const existing = selectedMode() === "existing";
+  $("#existing-panel").hidden = !existing;
+  $("#provider-block").hidden = existing;
+  if (existing) {
+    // No cloud-provisioning creds needed; hide them all (IBM key stays).
+    for (const g of document.querySelectorAll("#creds-form .cred-group")) g.hidden = true;
+  } else {
+    showCredsFor(selectedProvider());
+  }
+}
+for (const r of document.querySelectorAll('input[name="mode"]')) {
+  r.addEventListener("change", applyMode);
 }
 
 // ---- prerequisites --------------------------------------------------------
@@ -337,9 +369,20 @@ $("#start-btn").addEventListener("click", async () => {
     }
     $("#log").textContent = "";
     const mode = selectedMode();
+    const inputs = { components: collectComponents() };
+    if (mode === "existing") {
+      for (const i of document.querySelectorAll("#existing-form input[data-existing-input]")) {
+        const v = i.value.trim();
+        if (v) inputs[i.dataset.existingInput] = v;
+      }
+      for (const s of document.querySelectorAll("#existing-form input[data-existing-secret]")) {
+        const v = s.value.trim();
+        if (v) credentials[s.dataset.existingSecret] = v;
+      }
+    }
     const run = await api("/runs", {
       method: "POST",
-      body: JSON.stringify({ mode, credentials }),
+      body: JSON.stringify({ mode, credentials, inputs }),
     });
     currentRunId = run.id;
     banner(
@@ -375,4 +418,5 @@ $("#destroy-btn").addEventListener("click", async () => {
 
 // ---- boot -----------------------------------------------------------------
 loadPrereqs();
-loadCatalog();
+loadCatalog().then(applyMode);
+applyMode();

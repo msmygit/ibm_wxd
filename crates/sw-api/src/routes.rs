@@ -129,25 +129,43 @@ struct CreateRunBody {
     /// blank fields fall back to `~/.aws` / `~/.ibm`.
     #[serde(default)]
     credentials: BTreeMap<String, String>,
+    /// Non-secret inputs entered up front (e.g. `OCP_URL`,
+    /// `kubeconfig_source_path`, selected `services`). Merged into run state.
+    #[serde(default)]
+    inputs: BTreeMap<String, String>,
 }
 
 async fn create_run(
     State(state): State<AppState>,
     body: Option<axum::Json<CreateRunBody>>,
 ) -> Response {
-    let (mode, ui_creds) = match body {
-        Some(axum::Json(b)) => (b.mode.unwrap_or_else(|| "provision".to_string()), b.credentials),
-        None => ("provision".to_string(), BTreeMap::new()),
+    let (mode, ui_creds, ui_inputs) = match body {
+        Some(axum::Json(b)) => (
+            b.mode.unwrap_or_else(|| "provision".to_string()),
+            b.credentials,
+            b.inputs,
+        ),
+        None => ("provision".to_string(), BTreeMap::new(), BTreeMap::new()),
     };
     let id = Uuid::new_v4().to_string();
     match state.orch.create_run_mode(id.clone(), mode) {
-        Ok(run) => {
+        Ok(mut run) => {
             // Convenience: preload credentials from well-known files so the user
             // isn't asked to paste them. AWS creds are read from ~/.aws by the
             // tools themselves; here we seed the IBM entitlement key.
             preload_known_secrets(state.orch.store(), &id);
             // UI-entered credentials override / supplement the file-based ones.
             store_ui_credentials(state.orch.store(), &id, &ui_creds);
+            // Up-front non-secret inputs (cluster URL, kubeconfig path, selected
+            // services, …) so steps don't have to prompt for them.
+            if !ui_inputs.is_empty() {
+                for (k, v) in &ui_inputs {
+                    if !v.trim().is_empty() {
+                        run.inputs.insert(k.clone(), v.trim().to_string());
+                    }
+                }
+                let _ = state.orch.store().save(&run);
+            }
             // Drive the run in the background; the UI watches progress via SSE.
             let orch = state.orch.clone();
             tokio::spawn(async move {

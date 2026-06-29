@@ -32,35 +32,46 @@ pub fn hyperscalers() -> Vec<Hyperscaler> {
     ]
 }
 
-/// The service catalog. watsonx.data is preselected; others are entitlement-gated
-/// at install time.
+/// The service catalog for IBM Software Hub 5.4.x. watsonx.data is preselected,
+/// watsonx.data premium next, then the other installable services. `component`
+/// is the `cpd-cli manage apply-cr --components` token. Entitlement is validated
+/// at install time, not pre-filtered.
 pub fn services() -> Vec<Service> {
-    vec![
-        Service {
-            id: "watsonx-data".into(),
-            name: "watsonx.data".into(),
-            default_selected: true,
-            component: "watsonx_data".into(),
-        },
-        Service {
-            id: "watsonx-data-premium".into(),
-            name: "watsonx.data premium".into(),
-            default_selected: false,
-            component: "watsonx_data_premium".into(),
-        },
-        Service {
-            id: "watsonx-ai".into(),
-            name: "watsonx.ai".into(),
-            default_selected: false,
-            component: "watsonx_ai".into(),
-        },
-        Service {
-            id: "data-product-hub".into(),
-            name: "Data Product Hub".into(),
-            default_selected: false,
-            component: "data_product_hub".into(),
-        },
-    ]
+    // (display name, component id, default_selected)
+    let rows: &[(&str, &str, bool)] = &[
+        ("watsonx.data", "watsonx_data", true),
+        ("watsonx.data premium", "watsonx_data_premium", false),
+        ("watsonx.ai", "watsonx_ai", false),
+        ("watsonx Assistant", "watson_assistant", false),
+        ("watsonx Discovery (Watson Discovery)", "watson_discovery", false),
+        ("Watson Studio", "ws", false),
+        ("Watson Machine Learning", "wml", false),
+        ("IBM Knowledge Catalog", "wkc", false),
+        ("DataStage Enterprise", "datastage_ent", false),
+        ("DataStage Enterprise Plus", "datastage_ent_plus", false),
+        ("Db2", "db2oltp", false),
+        ("Db2 Warehouse", "db2wh", false),
+        ("Db2 Data Management Console", "dmc", false),
+        ("Analytics Engine (Apache Spark)", "analyticsengine", false),
+        ("Cognos Analytics", "cognos_analytics", false),
+        ("Cognos Dashboards", "cognos_dashboards", false),
+        ("Planning Analytics", "planning_analytics", false),
+        ("Decision Optimization", "dods", false),
+        ("SPSS Modeler", "spss_modeler", false),
+        ("OpenPages", "openpages", false),
+        ("Match 360 (MDM)", "match360", false),
+        ("Data Product Hub", "data_product_hub", false),
+        ("RStudio", "rstudio", false),
+        ("Product Master", "product_master", false),
+    ];
+    rows.iter()
+        .map(|(name, component, default_selected)| Service {
+            id: component.replace('_', "-"),
+            name: name.to_string(),
+            default_selected: *default_selected,
+            component: component.to_string(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

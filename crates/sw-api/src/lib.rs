@@ -22,9 +22,10 @@ pub struct AppState {
     pub ui_dir: std::path::PathBuf,
 }
 
-/// The watsonx.data services module (shared by both run modes).
-fn services_module() -> sw_mod_services::ServicesModule {
-    sw_mod_services::ServicesModule::new(vec![Arc::new(wxd_svc_watsonxdata::WatsonxDataInstaller)])
+/// The selection-driven services module (shared by both run modes). Installs the
+/// components chosen in the UI's multi-select via one `cpd-cli apply-cr`.
+fn services_module() -> sw_mod_services::ComponentsModule {
+    sw_mod_services::ComponentsModule
 }
 
 /// "Provision a new cluster" graph: install prerequisites → provision (AWS IPI)
