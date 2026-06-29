@@ -65,7 +65,25 @@ http://127.0.0.1:4178/?token=<token>
 Open it in your browser. The token authenticates the UI (the API rejects
 requests without it).
 
-## 3. The flow
+## 3. Choose your path
+
+On the start screen pick one:
+
+- **Provision a new OpenShift cluster on AWS** (default) — the full flow below.
+- **Use an OpenShift cluster I already have** — skips provisioning. You give the
+  installer a **kubeconfig** (a path on this machine, e.g. `~/.kube/config`, or
+  pasted contents) and it goes straight to installing Software Hub + watsonx.data
+  on that cluster. This is the cheapest way to exercise the back half of the
+  pipeline without paying for a new cluster.
+
+> **Resource tagging.** In the provision path, the **Cluster / resource name**
+> you enter tags *every* cloud resource the installer creates (`Name=<your-name>`
+> via AWS `platform.aws.userTags` in `install-config.yaml`), and you can add more
+> `key=value` tags in the **Extra cloud tags** field. The same tag input will
+> flow to IBM Cloud / Azure / GCP `userTags` equivalents as those provisioners
+> land. The existing-cluster path creates no resources, so there is nothing to tag.
+
+## 4. The flow (provision a new cluster)
 
 Click **Start install**. The run drives these phases; each streams live status,
 a progress tracker, logs, and — on failure — an error with next steps. You can
@@ -93,7 +111,7 @@ a progress tracker, logs, and — on failure — an error with next steps. You c
 
 All steps are idempotent (check-then-act), so **Retry** and **Resume** are safe.
 
-## 4. Artifacts
+## 5. Artifacts
 
 Everything for a run lives in `~/.wxd/runs/<run-id>/`:
 - `state.json` — per-step status (no secrets).
@@ -103,7 +121,7 @@ Everything for a run lives in `~/.wxd/runs/<run-id>/`:
 - `artifacts/cluster/` — the `openshift-install` working dir (incl.
   `auth/kubeadmin-password` and `.openshift_install.log`).
 
-## 5. Teardown (do not skip)
+## 6. Teardown (do not skip)
 
 In the UI, click **Destroy cluster** (enabled once provisioning completed), or
 run it yourself:
@@ -115,7 +133,7 @@ openshift-install destroy cluster --dir ~/.wxd/runs/<run-id>/artifacts/cluster
 If teardown is interrupted, some AWS resources may need manual cleanup in the
 console — check the install log in the cluster dir for resource identifiers.
 
-## 6. Hermetic development (no AWS, no spend)
+## 7. Hermetic development (no AWS, no spend)
 
 Every module is tested against a mock command runner — no cloud, no real CLIs:
 

@@ -90,12 +90,20 @@ impl StepState {
     }
 }
 
+/// Default run mode when an older `state.json` predates the `mode` field.
+fn default_mode() -> String {
+    "provision".to_string()
+}
+
 /// The full persisted state of a run. Secrets are NEVER stored here — only
 /// non-secret inputs live in `inputs`; secrets go to the separate secret store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunState {
     pub id: RunId,
     pub status: RunStatus,
+    /// Which step graph this run uses (e.g. `"provision"` or `"existing"`).
+    #[serde(default = "default_mode")]
+    pub mode: String,
     pub steps: Vec<StepState>,
     /// Index of the step currently being driven (or to resume at).
     pub cursor: usize,
@@ -115,6 +123,7 @@ impl RunState {
         Self {
             id,
             status: RunStatus::Pending,
+            mode: default_mode(),
             steps,
             cursor: 0,
             inputs: BTreeMap::new(),

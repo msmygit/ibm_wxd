@@ -21,6 +21,13 @@
     <section class="panel" id="control-panel" aria-labelledby="control-title">
       <h2 id="control-title">Install run</h2>
       <p class="muted" id="run-meta">No run yet.</p>
+      <fieldset id="mode-select" class="mode-select">
+        <legend>How do you want to start?</legend>
+        <label><input type="radio" name="mode" value="provision" checked />
+          <span>Provision a new OpenShift cluster on AWS</span></label>
+        <label><input type="radio" name="mode" value="existing" />
+          <span>Use an OpenShift cluster I already have</span></label>
+      </fieldset>
       <div class="actions">
         <button id="start-btn" class="primary" type="button">Start install</button>
         <button id="pause-btn" class="ghost" type="button" disabled>Pause</button>

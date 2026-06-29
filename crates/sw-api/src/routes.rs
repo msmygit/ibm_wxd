@@ -4,7 +4,7 @@
 
 use crate::{catalog, AppState};
 use axum::{
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
     response::sse::{Event as SseEvent, KeepAlive, Sse},
@@ -32,6 +32,7 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/:id/events", get(events))
         .route("/catalog/hyperscalers", get(get_hyperscalers))
         .route("/catalog/services", get(get_services))
+        .route("/catalog/modes", get(get_modes))
         .route("/modules", get(get_modules))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
 
@@ -80,9 +81,22 @@ fn err500(e: impl std::fmt::Display) -> Response {
 
 // ---- run handlers ---------------------------------------------------------
 
-async fn create_run(State(state): State<AppState>) -> Response {
+#[derive(Debug, Default, Deserialize)]
+struct CreateRunBody {
+    /// `"provision"` (new AWS cluster) or `"existing"` (adopt a kubeconfig).
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+async fn create_run(
+    State(state): State<AppState>,
+    body: Option<axum::Json<CreateRunBody>>,
+) -> Response {
+    let mode = body
+        .and_then(|axum::Json(b)| b.mode)
+        .unwrap_or_else(|| "provision".to_string());
     let id = Uuid::new_v4().to_string();
-    match state.orch.create_run(id.clone()) {
+    match state.orch.create_run_mode(id.clone(), mode) {
         Ok(run) => {
             // Drive the run in the background; the UI watches progress via SSE.
             let orch = state.orch.clone();
@@ -221,8 +235,21 @@ async fn get_services() -> Response {
     Json(catalog::services()).into_response()
 }
 
-async fn get_modules(State(state): State<AppState>) -> Response {
-    Json(state.orch.registry().views()).into_response()
+#[derive(Debug, Default, Deserialize)]
+struct ModeQuery {
+    mode: Option<String>,
+}
+
+async fn get_modules(State(state): State<AppState>, Query(q): Query<ModeQuery>) -> Response {
+    let views = match q.mode {
+        Some(m) => state.orch.registry_for(&m).views(),
+        None => state.orch.registry().views(),
+    };
+    Json(views).into_response()
+}
+
+async fn get_modes(State(state): State<AppState>) -> Response {
+    Json(state.orch.modes()).into_response()
 }
 
 async fn openapi() -> Response {

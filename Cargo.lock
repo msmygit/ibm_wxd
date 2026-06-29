@@ -545,6 +545,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sw-core",
+ "sw-mod-existing",
  "sw-mod-provision",
  "sw-mod-services",
  "sw-mod-softwarehub",
@@ -564,6 +565,17 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "sw-mod-existing"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sw-core",
+ "tokio",
 ]
 
 [[package]]

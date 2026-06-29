@@ -202,6 +202,12 @@ fn provision_failure_next_steps() -> Vec<String> {
 fn spec_fields() -> Vec<InputField> {
     vec![
         InputField {
+            key: "cluster_name".to_string(),
+            label: "Cluster / resource name (tags every cloud resource)".to_string(),
+            secret: false,
+            default: Some("wxd".to_string()),
+        },
+        InputField {
             key: "region".to_string(),
             label: "AWS region".to_string(),
             secret: false,
@@ -237,11 +243,19 @@ fn spec_fields() -> Vec<InputField> {
             secret: false,
             default: Some("3".to_string()),
         },
+        InputField {
+            key: "resource_tags".to_string(),
+            label: "Extra cloud tags (optional, key=value,key2=value2)".to_string(),
+            secret: false,
+            default: None,
+        },
     ]
 }
 
-/// The required, non-secret input keys for the cluster spec.
-const REQUIRED_INPUTS: [&str; 6] = [
+/// The required, non-secret input keys for the cluster spec. `cluster_name` is
+/// required because it tags every cloud resource the installer creates.
+const REQUIRED_INPUTS: [&str; 7] = [
+    "cluster_name",
     "region",
     "base_domain",
     "control_plane_type",
@@ -249,6 +263,25 @@ const REQUIRED_INPUTS: [&str; 6] = [
     "worker_type",
     "worker_count",
 ];
+
+/// Parse a `key=value,key2=value2` tag string into pairs, ignoring blanks.
+pub fn parse_tags(raw: &str) -> Vec<(String, String)> {
+    raw.split(',')
+        .filter_map(|kv| {
+            let kv = kv.trim();
+            if kv.is_empty() {
+                return None;
+            }
+            let (k, v) = kv.split_once('=')?;
+            let (k, v) = (k.trim(), v.trim());
+            if k.is_empty() || v.is_empty() {
+                None
+            } else {
+                Some((k.to_string(), v.to_string()))
+            }
+        })
+        .collect()
+}
 
 /// Render an `install-config.yaml` for AWS IPI from the collected inputs.
 ///
@@ -266,10 +299,22 @@ pub fn render_install_config(
     worker_count: &str,
     pull_secret: &str,
     ssh_key: Option<&str>,
+    user_tags: &[(String, String)],
 ) -> String {
     let ssh_line = match ssh_key {
         Some(key) if !key.is_empty() => format!("sshKey: '{}'\n", key.trim()),
         _ => String::new(),
+    };
+    // Every resource openshift-install creates on AWS gets these tags
+    // (`platform.aws.userTags`), keyed off the user-provided name plus any extras.
+    let mut tag_lines = String::new();
+    for (k, v) in user_tags {
+        tag_lines.push_str(&format!("      {k}: '{v}'\n"));
+    }
+    let user_tags_block = if tag_lines.is_empty() {
+        String::new()
+    } else {
+        format!("    userTags:\n{tag_lines}")
     };
     format!(
         "apiVersion: v1\n\
@@ -291,9 +336,23 @@ pub fn render_install_config(
          platform:\n  \
          aws:\n    \
          region: {region}\n\
+         {user_tags_block}\
          pullSecret: '{pull_secret}'\n\
          {ssh_line}"
     )
+}
+
+/// Build the AWS userTags for a run: always include `Name=<cluster_name>` (so
+/// every resource is tagged with the user-provided name) plus any extra
+/// `resource_tags`.
+fn build_user_tags(cluster_name: &str, resource_tags: &str) -> Vec<(String, String)> {
+    let mut tags = vec![("Name".to_string(), cluster_name.to_string())];
+    for (k, v) in parse_tags(resource_tags) {
+        if k != "Name" {
+            tags.push((k, v));
+        }
+    }
+    tags
 }
 
 /// The provisioning module: contributes the ordered steps that take a run from
@@ -492,6 +551,16 @@ impl Step for WriteInstallConfigStep {
             }
         };
         let ssh_key = ctx.input("ssh_key");
+        let resource_tags = ctx.input("resource_tags").unwrap_or("");
+        let user_tags = build_user_tags(cluster_name, resource_tags);
+        ctx.log(format!(
+            "tagging all cloud resources with: {}",
+            user_tags
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
 
         let config = render_install_config(
             cluster_name,
@@ -503,6 +572,7 @@ impl Step for WriteInstallConfigStep {
             worker_count,
             pull_secret,
             ssh_key,
+            &user_tags,
         );
 
         let dir = cluster_dir(ctx);
@@ -599,12 +669,14 @@ mod tests {
 
     fn full_spec_inputs() -> BTreeMap<String, String> {
         let mut m = BTreeMap::new();
+        m.insert("cluster_name".into(), "wxd-test".into());
         m.insert("region".into(), "us-west-2".into());
         m.insert("base_domain".into(), "example.com".into());
         m.insert("control_plane_type".into(), "m6i.2xlarge".into());
         m.insert("control_plane_count".into(), "3".into());
         m.insert("worker_type".into(), "m6i.4xlarge".into());
         m.insert("worker_count".into(), "3".into());
+        m.insert("resource_tags".into(), "owner=qa,project=wxd".into());
         m
     }
 
@@ -619,11 +691,13 @@ mod tests {
         let outcome = ClusterSpecStep.run(&ctx).await;
         match outcome {
             StepOutcome::NeedsInput { fields, .. } => {
-                assert_eq!(fields.len(), 6, "should request all six spec fields");
+                assert_eq!(fields.len(), 8, "should request all spec fields");
                 let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
+                assert!(keys.contains(&"cluster_name"));
                 assert!(keys.contains(&"region"));
                 assert!(keys.contains(&"base_domain"));
                 assert!(keys.contains(&"worker_count"));
+                assert!(keys.contains(&"resource_tags"));
             }
             other => panic!("expected NeedsInput, got {other:?}"),
         }
@@ -664,6 +738,25 @@ mod tests {
         assert!(written.contains("type: m6i.4xlarge"), "worker type missing");
         assert!(written.contains("baseDomain: example.com"));
         assert!(written.contains("pullSecret"));
+        // Every resource is tagged with the user-provided name + extra tags.
+        assert!(written.contains("userTags:"), "userTags block missing: {written}");
+        assert!(written.contains("Name: 'wxd-test'"), "Name tag missing: {written}");
+        assert!(written.contains("owner: 'qa'"), "extra tag missing: {written}");
+    }
+
+    #[test]
+    fn parse_tags_handles_blanks_and_pairs() {
+        assert_eq!(
+            parse_tags("owner=qa, project=wxd , =bad, nokeyval, "),
+            vec![("owner".to_string(), "qa".to_string()), ("project".to_string(), "wxd".to_string())]
+        );
+    }
+
+    #[test]
+    fn build_user_tags_always_includes_name() {
+        let tags = build_user_tags("my-cluster", "owner=qa");
+        assert_eq!(tags[0], ("Name".to_string(), "my-cluster".to_string()));
+        assert!(tags.contains(&("owner".to_string(), "qa".to_string())));
     }
 
     #[tokio::test]
