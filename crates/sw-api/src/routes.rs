@@ -33,6 +33,8 @@ pub fn router(state: AppState) -> Router {
         .route("/catalog/hyperscalers", get(get_hyperscalers))
         .route("/catalog/services", get(get_services))
         .route("/catalog/modes", get(get_modes))
+        .route("/prereqs", get(get_prereqs))
+        .route("/prereqs/install", post(install_prereqs))
         .route("/modules", get(get_modules))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
 
@@ -49,6 +51,11 @@ pub fn router(state: AppState) -> Router {
 // ---- auth -----------------------------------------------------------------
 
 async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    // No token configured → auth disabled (the server binds 127.0.0.1 only, so
+    // only local processes can reach it). Set WXD_TOKEN to require a token.
+    if state.token.is_empty() {
+        return next.run(req).await;
+    }
     if token_from_request(&req).as_deref() == Some(state.token.as_str()) {
         next.run(req).await
     } else {
@@ -81,23 +88,84 @@ fn err500(e: impl std::fmt::Display) -> Response {
 
 // ---- run handlers ---------------------------------------------------------
 
+/// Seed a run's secret store from well-known credential files on the host, if
+/// present. Currently: `~/.ibm/IBM_CLOUD_API_KEY` → `IBM_ENTITLEMENT_KEY`.
+fn preload_known_secrets(store: &sw_core::RunStore, id: &str) {
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let path = std::path::Path::new(&home).join(".ibm").join("IBM_CLOUD_API_KEY");
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        let key = contents.trim().to_string();
+        if !key.is_empty() {
+            let mut secrets = store.load_secrets(id).unwrap_or_default();
+            secrets.entry("IBM_ENTITLEMENT_KEY".to_string()).or_insert(key);
+            let _ = store.save_secrets(id, &secrets);
+        }
+    }
+}
+
+/// Store non-empty UI-entered credentials into the run's `0600` secret store.
+fn store_ui_credentials(store: &sw_core::RunStore, id: &str, creds: &BTreeMap<String, String>) {
+    let provided: BTreeMap<String, String> = creds
+        .iter()
+        .filter(|(_, v)| !v.trim().is_empty())
+        .map(|(k, v)| (k.clone(), v.trim().to_string()))
+        .collect();
+    if provided.is_empty() {
+        return;
+    }
+    let mut secrets = store.load_secrets(id).unwrap_or_default();
+    secrets.extend(provided);
+    let _ = store.save_secrets(id, &secrets);
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct CreateRunBody {
     /// `"provision"` (new AWS cluster) or `"existing"` (adopt a kubeconfig).
     #[serde(default)]
     mode: Option<String>,
+    /// Cloud / IBM credentials entered in the UI, stored as run secrets
+    /// (e.g. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `IBM_ENTITLEMENT_KEY`,
+    /// `IBMCLOUD_API_KEY`, `ARM_CLIENT_SECRET`, `GOOGLE_CREDENTIALS`). Optional —
+    /// blank fields fall back to `~/.aws` / `~/.ibm`.
+    #[serde(default)]
+    credentials: BTreeMap<String, String>,
+    /// Non-secret inputs entered up front (e.g. `OCP_URL`,
+    /// `kubeconfig_source_path`, selected `services`). Merged into run state.
+    #[serde(default)]
+    inputs: BTreeMap<String, String>,
 }
 
 async fn create_run(
     State(state): State<AppState>,
     body: Option<axum::Json<CreateRunBody>>,
 ) -> Response {
-    let mode = body
-        .and_then(|axum::Json(b)| b.mode)
-        .unwrap_or_else(|| "provision".to_string());
+    let (mode, ui_creds, ui_inputs) = match body {
+        Some(axum::Json(b)) => (
+            b.mode.unwrap_or_else(|| "provision".to_string()),
+            b.credentials,
+            b.inputs,
+        ),
+        None => ("provision".to_string(), BTreeMap::new(), BTreeMap::new()),
+    };
     let id = Uuid::new_v4().to_string();
     match state.orch.create_run_mode(id.clone(), mode) {
-        Ok(run) => {
+        Ok(mut run) => {
+            // Convenience: preload credentials from well-known files so the user
+            // isn't asked to paste them. AWS creds are read from ~/.aws by the
+            // tools themselves; here we seed the IBM entitlement key.
+            preload_known_secrets(state.orch.store(), &id);
+            // UI-entered credentials override / supplement the file-based ones.
+            store_ui_credentials(state.orch.store(), &id, &ui_creds);
+            // Up-front non-secret inputs (cluster URL, kubeconfig path, selected
+            // services, …) so steps don't have to prompt for them.
+            if !ui_inputs.is_empty() {
+                for (k, v) in &ui_inputs {
+                    if !v.trim().is_empty() {
+                        run.inputs.insert(k.clone(), v.trim().to_string());
+                    }
+                }
+                let _ = state.orch.store().save(&run);
+            }
             // Drive the run in the background; the UI watches progress via SSE.
             let orch = state.orch.clone();
             tokio::spawn(async move {
@@ -250,6 +318,18 @@ async fn get_modules(State(state): State<AppState>, Query(q): Query<ModeQuery>) 
 
 async fn get_modes(State(state): State<AppState>) -> Response {
     Json(state.orch.modes()).into_response()
+}
+
+/// Report which prerequisite CLIs are present/missing on this machine.
+async fn get_prereqs(State(state): State<AppState>) -> Response {
+    let runner = state.orch.command_runner();
+    Json(sw_mod_prereqs::check_all(runner.as_ref()).await).into_response()
+}
+
+/// Install every missing, auto-installable prerequisite, then report status.
+async fn install_prereqs(State(state): State<AppState>) -> Response {
+    let runner = state.orch.command_runner();
+    Json(sw_mod_prereqs::install_missing(runner.as_ref()).await).into_response()
 }
 
 async fn openapi() -> Response {

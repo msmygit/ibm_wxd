@@ -10,43 +10,66 @@ self-managed OpenShift cluster on AWS, driven by the `wxd` web UI.
 > (the **Destroy cluster** button, or `openshift-install destroy cluster`) when
 > you are done.
 
+## What this tool does
+
+A single binary (`wxd`) that serves a local web UI and walks you through an
+install end to end. It is **modular and plug-n-play** — each phase is a module,
+and the UI renders whatever the active run mode contains.
+
+**Two run modes (pick one in the UI):**
+- **Provision a new OpenShift cluster on AWS** — creates the cluster from scratch
+  (IPI), then installs Software Hub + watsonx.data.
+- **Use an OpenShift cluster I already have** — you supply a kubeconfig; it skips
+  provisioning and installs Software Hub + watsonx.data onto that cluster.
+
+**What it handles for you:**
+- **Auto-installs the prerequisite CLIs** (`oc`, `helm`, `openshift-install`,
+  `cpd-cli`) into `~/.wxd/bin` — you do **not** need to install them yourself.
+  (`aws` is checked; install it yourself only if missing, as it needs admin rights.)
+- **Provisions** the cluster (`openshift-install` IPI) with your machine specs.
+- **Tags every cloud resource** with the name you provide (AWS `userTags`) plus
+  any extra `key=value` tags.
+- **Installs IBM Software Hub 5.4.0** (operators → control plane → readiness).
+- **Installs services** — watsonx.data by default; other entitled IBM services
+  plug in the same way.
+- **Pause / Resume / Retry** at any step; **Destroy cluster** to tear down.
+- Streams live status, logs, progress, and actionable errors throughout.
+
 ## 1. Prerequisites
 
 ### Build host
 - **Rust toolchain** (`cargo`). On this machine: `export PATH="/usr/local/opt/rust/bin:$HOME/.cargo/bin:$PATH"`.
 
-### CLIs on your `PATH` (the installer shells out to these)
-| Tool | Used for | Get it |
-|---|---|---|
-| `openshift-install` | provisioning the cluster (IPI) | console.redhat.com/openshift/install/aws/installer-provisioned |
-| `oc` | talking to the cluster | same downloads page |
-| `helm` (v3.18+) | Software Hub install steps | helm.sh |
-| `cpd-cli` | IBM Software Hub / CPD install | IBM Software Hub 5.4.x downloads |
-| `aws` | credential preflight | aws.amazon.com/cli |
-
-The installer's **preflight** steps check these and stop with actionable
-guidance if any are missing — they do not silently proceed.
+### CLIs — auto-installed
+The first phase of every run (**Install prerequisites**) downloads and installs
+`oc`, `helm`, `openshift-install`, and `cpd-cli` into `~/.wxd/bin` and puts that
+directory on the tool's PATH. You don't pre-install them. `aws` is the only
+check-only tool (install AWS CLI v2 yourself if it's missing — it needs admin).
 
 ### Credentials & inputs you'll need
-- **AWS account credentials** with IAM permissions for IPI, exported in the
-  environment you launch `wxd` from (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`,
-  optionally `AWS_SESSION_TOKEN`) **or** configured via `aws configure`
-  (`~/.aws/credentials`). `openshift-install` reads them the same way the AWS CLI does.
-- **A Route53 public hosted zone** — this is your cluster's **base domain**
-  (e.g. `example.com`). The cluster is created under `<cluster-name>.<base-domain>`.
-- **Red Hat pull secret** — from console.redhat.com/openshift/install/pull-secret.
-  The UI asks for it as a masked field; it is written only into the cluster's
-  `install-config.yaml` artifact.
-- **IBM entitlement key** — from myibm.ibm.com → Container software library. The
-  UI asks for it (masked) during the Software Hub phase. Stored only in the
-  run's `secrets.json` (`0600`), never in `state.json` or logs.
+You can supply credentials **two ways** — whichever you prefer:
+1. **In the UI** — the **Cloud credentials** panel has fields for AWS
+   (access key / secret / session token), the **IBM entitlement key**, the
+   **IBM Cloud API key**, and Azure/GCP (stored for when those provisioners land).
+2. **From files on the host** — leave the UI fields blank and the tool falls back
+   to `~/.aws/credentials` (for AWS) and `~/.ibm/IBM_CLOUD_API_KEY` (seeded as the
+   IBM entitlement key).
+
+What you need for a real AWS provision:
+- **AWS credentials** with IAM permissions for IPI (UI fields or `~/.aws`).
+- **A Route53 public hosted zone** — your cluster's **base domain** (e.g.
+  `example.com`); the cluster is created under `<cluster-name>.<base-domain>`.
+- **Red Hat pull secret** — from console.redhat.com/openshift/install/pull-secret;
+  the UI asks for it (masked) at the *write install-config* step.
+- **IBM entitlement key** — from myibm.ibm.com → Container software library
+  (UI field, or `~/.ibm/IBM_CLOUD_API_KEY`).
+
+All secrets live only in the run's `secrets.json` (`0600`), masked in logs/UI.
 
 ## 2. Launch
 
 ```bash
 export PATH="/usr/local/opt/rust/bin:$HOME/.cargo/bin:$PATH"
-export AWS_ACCESS_KEY_ID=...      # or rely on ~/.aws/credentials
-export AWS_SECRET_ACCESS_KEY=...
 
 # Dev run (compiles then serves). Override the port with WXD_PORT.
 cargo run -p sw-api --bin wxd
@@ -90,7 +113,9 @@ a progress tracker, logs, and — on failure — an error with next steps. You c
 **Pause / Resume / Retry** at any step boundary; state survives a restart of
 `wxd` (it's persisted under `~/.wxd/runs/<id>/`).
 
-1. **Preflight** — `oc` / `helm` / `aws` present.
+1. **Install prerequisites** (`mod-prereqs`) — downloads `oc`, `helm`,
+   `openshift-install`, `cpd-cli` into `~/.wxd/bin` (skips any already present);
+   checks `aws`.
 2. **Provision cluster** (`mod-provision`)
    - *Define cluster spec*: region (default `us-east-1`), **base domain**,
      control-plane type/count (default `3 × m6i.2xlarge`), worker type/count

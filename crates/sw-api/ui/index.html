@@ -3,28 +3,78 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>watsonx.data Easy Installer</title>
+  <title>IBM self-managed software Easy Installer</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="logo" aria-hidden="true">◆</span>
-      <h1>watsonx.data Easy Installer</h1>
+      <h1>IBM self-managed software Easy Installer</h1>
     </div>
-    <button id="theme-toggle" class="ghost" type="button" aria-label="Toggle light/dark theme">
-      Theme
+    <button id="theme-toggle" class="ghost icon-btn" type="button" aria-label="Toggle light/dark theme" title="Toggle light/dark theme">
+      <span id="theme-icon" aria-hidden="true">🌙</span>
     </button>
   </header>
 
   <main class="layout">
+    <section class="panel" id="prereqs-panel" aria-labelledby="prereqs-title">
+      <h2 id="prereqs-title">Prerequisite software</h2>
+      <p class="muted">
+        These CLIs are needed to drive the install. Missing ones can be installed
+        into <code>~/.wxd/bin</code> right here — you don't touch your system PATH.
+      </p>
+      <ul id="prereqs-list" class="prereqs" aria-live="polite"></ul>
+      <div class="actions">
+        <button id="prereqs-install-btn" class="primary" type="button">Install missing prerequisites</button>
+        <button id="prereqs-refresh-btn" class="ghost" type="button">Re-check</button>
+      </div>
+      <div id="prereqs-banner" class="banner" hidden></div>
+    </section>
+
+    <section class="panel" id="existing-panel" aria-labelledby="existing-title" hidden>
+      <h2 id="existing-title">Existing cluster connection</h2>
+      <p class="muted">
+        Connect the OpenShift cluster you already have. Provide its API URL and a
+        token <em>or</em> username/password, or point to a kubeconfig file on this
+        machine. Token/password are masked and stored only in the run's secret file.
+      </p>
+      <form id="existing-form" class="input-form">
+        <label><span>OpenShift API URL</span>
+          <input type="text" autocomplete="off" data-existing-input="OCP_URL"
+                 placeholder="https://api.cluster.example.com:6443" /></label>
+        <label><span>OpenShift console URL (optional)</span>
+          <input type="text" autocomplete="off" data-existing-input="OCP_CONSOLE_URL"
+                 placeholder="https://console-openshift-console.apps.cluster.example.com" /></label>
+        <label><span>API token</span>
+          <input type="password" autocomplete="new-password" data-existing-secret="OCP_TOKEN" /></label>
+        <label><span>…or username</span>
+          <input type="text" autocomplete="off" data-existing-input="OCP_USERNAME" /></label>
+        <label><span>…and password</span>
+          <input type="password" autocomplete="new-password" data-existing-secret="OCP_PASSWORD" /></label>
+        <label><span>…or path to a kubeconfig file</span>
+          <input type="text" autocomplete="off" data-existing-input="kubeconfig_source_path"
+                 placeholder="~/.kube/config" /></label>
+      </form>
+    </section>
+
+    <section class="panel" id="catalog-panel" aria-labelledby="catalog-title">
+      <h2 id="catalog-title">Catalog</h2>
+      <div id="provider-block">
+        <h3>Cloud provider</h3>
+        <ul id="hyperscalers" class="chips" role="radiogroup" aria-label="Cloud provider"></ul>
+      </div>
+      <h3>Services <span class="muted">(watsonx.data preselected — pick any to install)</span></h3>
+      <ul id="services" class="checks"></ul>
+    </section>
+
     <section class="panel" id="control-panel" aria-labelledby="control-title">
       <h2 id="control-title">Install run</h2>
       <p class="muted" id="run-meta">No run yet.</p>
       <fieldset id="mode-select" class="mode-select">
         <legend>How do you want to start?</legend>
         <label><input type="radio" name="mode" value="provision" checked />
-          <span>Provision a new OpenShift cluster on AWS</span></label>
+          <span>Provision a new OpenShift cluster</span></label>
         <label><input type="radio" name="mode" value="existing" />
           <span>Use an OpenShift cluster I already have</span></label>
       </fieldset>
@@ -36,6 +86,49 @@
         <button id="destroy-btn" class="warn" type="button" disabled title="Runs openshift-install destroy cluster">Destroy cluster</button>
       </div>
       <div id="status-banner" class="banner" hidden></div>
+    </section>
+
+    <section class="panel" id="credentials-panel" aria-labelledby="credentials-title">
+      <h2 id="credentials-title">Cloud credentials</h2>
+      <p class="muted">
+        Keys are masked as you type, stored only in the run's <code>0600</code>
+        secret file, and masked in all output. Cloud fields shown match the
+        provider selected above. Blank cloud fields fall back to
+        <code>~/.aws/credentials</code>.
+      </p>
+      <form id="creds-form" class="input-form">
+        <h3>IBM (required for the Software Hub / watsonx.data install)</h3>
+        <label><span>IBM entitlement key <span class="req">*</span></span>
+          <input type="password" autocomplete="new-password" data-cred="IBM_ENTITLEMENT_KEY" required /></label>
+
+        <div class="cred-group" data-provider="aws">
+          <h3>Amazon Web Services</h3>
+          <label><span>AWS Access Key ID</span>
+            <input type="password" autocomplete="new-password" data-cred="AWS_ACCESS_KEY_ID" /></label>
+          <label><span>AWS Secret Access Key</span>
+            <input type="password" autocomplete="new-password" data-cred="AWS_SECRET_ACCESS_KEY" /></label>
+          <label><span>AWS Session Token (optional)</span>
+            <input type="password" autocomplete="new-password" data-cred="AWS_SESSION_TOKEN" /></label>
+        </div>
+
+        <div class="cred-group" data-provider="ibmcloud" hidden>
+          <h3>IBM Cloud</h3>
+          <label><span>IBM Cloud API key</span>
+            <input type="password" autocomplete="new-password" data-cred="IBMCLOUD_API_KEY" /></label>
+        </div>
+
+        <div class="cred-group" data-provider="azure" hidden>
+          <h3>Microsoft Azure</h3>
+          <label><span>Azure client secret (ARM_CLIENT_SECRET)</span>
+            <input type="password" autocomplete="new-password" data-cred="ARM_CLIENT_SECRET" /></label>
+        </div>
+
+        <div class="cred-group" data-provider="gcp" hidden>
+          <h3>Google Cloud</h3>
+          <label><span>GCP service-account JSON (GOOGLE_CREDENTIALS)</span>
+            <input type="password" autocomplete="new-password" data-cred="GOOGLE_CREDENTIALS" /></label>
+        </div>
+      </form>
     </section>
 
     <section class="panel" id="progress-panel" aria-labelledby="progress-title">
@@ -52,14 +145,6 @@
     <section class="panel" id="log-panel" aria-labelledby="log-title">
       <h2 id="log-title">Live log</h2>
       <pre id="log" class="log" aria-live="polite"></pre>
-    </section>
-
-    <section class="panel" id="catalog-panel" aria-labelledby="catalog-title">
-      <h2 id="catalog-title">Catalog</h2>
-      <h3>Cloud providers</h3>
-      <ul id="hyperscalers" class="chips"></ul>
-      <h3>Services</h3>
-      <ul id="services" class="chips"></ul>
     </section>
   </main>
 

@@ -159,12 +159,147 @@ impl Step for VerifyStep {
     }
 }
 
+// ===========================================================================
+// Generic, selection-driven services module (used by the app).
+// ===========================================================================
+
+/// Installs the user-selected set of IBM Software Hub components in a single
+/// `cpd-cli manage apply-cr --components <list>`. The selection comes from the
+/// UI's multi-select as the comma-separated `components` input (component ids
+/// like `watsonx_data,watsonx_ai`); defaults to `watsonx_data`.
+pub struct ComponentsModule;
+
+const DEFAULT_COMPONENTS: &str = "watsonx_data";
+
+fn selected_components(ctx: &StepContext) -> String {
+    let raw = ctx
+        .input("components")
+        .filter(|c| !c.trim().is_empty())
+        .unwrap_or(DEFAULT_COMPONENTS);
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn operands_ns(ctx: &StepContext) -> String {
+    ctx.input("PROJECT_CPD_INST_OPERANDS").unwrap_or("cpd-instance").to_string()
+}
+
+impl Module for ComponentsModule {
+    fn id(&self) -> &str {
+        "mod-services"
+    }
+    fn title(&self) -> &str {
+        "Install services"
+    }
+    fn steps(&self) -> Vec<Box<dyn Step>> {
+        vec![
+            Box::new(SelectComponentsStep),
+            Box::new(ApplyComponentsStep),
+            Box::new(VerifyComponentsStep),
+        ]
+    }
+}
+
+struct SelectComponentsStep;
+#[async_trait]
+impl Step for SelectComponentsStep {
+    fn id(&self) -> &str {
+        "select-services"
+    }
+    fn title(&self) -> &str {
+        "Select services"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        ctx.log(format!("selected components: {}", selected_components(ctx)));
+        StepOutcome::Completed
+    }
+}
+
+struct ApplyComponentsStep;
+#[async_trait]
+impl Step for ApplyComponentsStep {
+    fn id(&self) -> &str {
+        "install-services"
+    }
+    fn title(&self) -> &str {
+        "Install selected services"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        let components = selected_components(ctx);
+        let ns = operands_ns(ctx);
+        let version = ctx.input("VERSION").unwrap_or("5.4.0").to_string();
+        ctx.log(format!("applying components [{components}] in {ns} (release {version})"));
+        let args = vec![
+            "manage".into(),
+            "apply-cr".into(),
+            format!("--components={components}"),
+            format!("--cpd_instance_ns={ns}"),
+            format!("--release={version}"),
+        ];
+        match ctx.run_in_cluster("cpd-cli", &args).await {
+            Ok(o) if o.success() => {
+                ctx.progress(100);
+                StepOutcome::Completed
+            }
+            Ok(o) => StepOutcome::Failed {
+                error: format!("apply-cr for services failed (exit {}): {}", o.status, o.stderr.trim()),
+                next_steps: vec![
+                    "Confirm the entitlement key, storage classes, and component ids, then retry.".into(),
+                    format!("Inspect operand status: oc get ZenService -n {ns}"),
+                ],
+            },
+            Err(e) => StepOutcome::Failed {
+                error: format!("could not run cpd-cli: {e}"),
+                next_steps: vec!["Ensure cpd-cli is installed (Prerequisites), then retry.".into()],
+            },
+        }
+    }
+}
+
+struct VerifyComponentsStep;
+#[async_trait]
+impl Step for VerifyComponentsStep {
+    fn id(&self) -> &str {
+        "verify-services"
+    }
+    fn title(&self) -> &str {
+        "Verify services"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        let ns = operands_ns(ctx);
+        ctx.log("checking service readiness");
+        match ctx
+            .run_in_cluster("oc", &["get".into(), "ZenService".into(), "-n".into(), ns.clone()])
+            .await
+        {
+            Ok(o) if o.success() && o.stdout.contains("Completed") => {
+                ctx.progress(100);
+                StepOutcome::Completed
+            }
+            Ok(o) => StepOutcome::Failed {
+                error: format!("services not ready yet: {}", o.stdout.trim()),
+                next_steps: vec![
+                    "Reconciliation can take a while; wait, then Retry this step.".into(),
+                    format!("Watch: oc get ZenService -n {ns} -o yaml"),
+                ],
+            },
+            Err(e) => StepOutcome::Failed {
+                error: format!("could not query service status: {e}"),
+                next_steps: vec!["Ensure oc has cluster access, then retry.".into()],
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use sw_core::{EventBus, MockCommandRunner};
+    use sw_core::{EventBus, MockCommandRunner, MockResponse};
 
     /// A fake installer that records how many times install/verify ran and runs
     /// a marker command through the runner so we can assert it was driven.
@@ -307,5 +442,59 @@ mod tests {
         let select = &steps[0];
         let ctx = ctx_with(Arc::new(MockCommandRunner::new(vec![])));
         assert_eq!(select.run(&ctx).await, StepOutcome::Completed);
+    }
+
+    // ---- ComponentsModule (selection-driven) ------------------------------
+
+    fn ctx_inputs(runner: Arc<dyn sw_core::CommandRunner>, inputs: &[(&str, &str)]) -> StepContext {
+        let inputs: BTreeMap<String, String> =
+            inputs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        StepContext::with_artifacts(
+            "run".into(),
+            "mod-services/x".into(),
+            runner,
+            EventBus::new(),
+            inputs,
+            BTreeMap::new(),
+            std::env::temp_dir(),
+        )
+    }
+
+    #[test]
+    fn components_module_has_three_steps() {
+        let ids: Vec<_> = ComponentsModule.steps().iter().map(|s| s.id().to_string()).collect();
+        assert_eq!(ids, vec!["select-services", "install-services", "verify-services"]);
+    }
+
+    #[tokio::test]
+    async fn apply_uses_selected_components_and_defaults() {
+        // explicit multi-select
+        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::ok("apply-cr", "ok")]));
+        let ctx = ctx_inputs(runner.clone(), &[("components", "watsonx_data,watsonx_ai")]);
+        assert_eq!(ApplyComponentsStep.run(&ctx).await, StepOutcome::Completed);
+        assert!(runner.calls().iter().any(|c| c.contains("--components=watsonx_data,watsonx_ai")));
+
+        // default when absent
+        let runner2 = Arc::new(MockCommandRunner::new(vec![MockResponse::ok("apply-cr", "ok")]));
+        let ctx2 = ctx_inputs(runner2.clone(), &[]);
+        assert_eq!(ApplyComponentsStep.run(&ctx2).await, StepOutcome::Completed);
+        assert!(runner2.calls().iter().any(|c| c.contains("--components=watsonx_data")));
+    }
+
+    #[tokio::test]
+    async fn apply_failure_reports_next_steps() {
+        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::fail("apply-cr", 1, "bad component")]));
+        let ctx = ctx_inputs(runner, &[("components", "nope")]);
+        match ApplyComponentsStep.run(&ctx).await {
+            StepOutcome::Failed { next_steps, .. } => assert!(!next_steps.is_empty()),
+            o => panic!("expected Failed, got {o:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_completes_when_zenservice_completed() {
+        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::ok("ZenService", "lite-cr Completed")]));
+        let ctx = ctx_inputs(runner, &[]);
+        assert_eq!(VerifyComponentsStep.run(&ctx).await, StepOutcome::Completed);
     }
 }

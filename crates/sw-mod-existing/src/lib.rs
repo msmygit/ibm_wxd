@@ -92,24 +92,76 @@ impl Step for ProvideKubeconfig {
             return StepOutcome::Completed;
         }
 
-        // Nothing supplied yet — ask.
+        // Log in to the cluster's API URL with a token or username/password.
+        // `run_in_cluster` sets KUBECONFIG to this run's path, so `oc login`
+        // writes the kubeconfig there.
+        if let Some(url) = ctx.input("OCP_URL").filter(|u| !u.is_empty()) {
+            let mut args = vec![
+                "login".to_string(),
+                url.to_string(),
+                "--insecure-skip-tls-verify=true".to_string(),
+            ];
+            let how = if let Some(token) = ctx.secret("OCP_TOKEN").filter(|t| !t.is_empty()) {
+                args.push(format!("--token={token}"));
+                "token"
+            } else if let (Some(user), Some(pass)) = (
+                ctx.input("OCP_USERNAME").filter(|u| !u.is_empty()),
+                ctx.secret("OCP_PASSWORD").filter(|p| !p.is_empty()),
+            ) {
+                args.push("-u".into());
+                args.push(user.to_string());
+                args.push("-p".into());
+                args.push(pass.to_string());
+                "username/password"
+            } else {
+                return StepOutcome::NeedsInput {
+                    prompt: format!(
+                        "Provide credentials to log in to {url} — an API token, or a username and password."
+                    ),
+                    fields: vec![
+                        InputField { key: "OCP_TOKEN".into(), label: "API token".into(), secret: true, default: None },
+                        InputField { key: "OCP_USERNAME".into(), label: "…or username".into(), secret: false, default: None },
+                        InputField { key: "OCP_PASSWORD".into(), label: "…and password".into(), secret: true, default: None },
+                    ],
+                };
+            };
+            ctx.log(format!("logging in to {url} with {how}"));
+            match ctx.run_in_cluster("oc", &args).await {
+                Ok(o) if o.success() && ctx.kubeconfig_path().exists() => {
+                    ctx.log("logged in; kubeconfig written");
+                    ctx.progress(100);
+                    return StepOutcome::Completed;
+                }
+                Ok(o) => {
+                    return StepOutcome::Failed {
+                        error: format!("oc login failed (exit {}): {}", o.status, o.stderr.trim()),
+                        next_steps: vec![
+                            "Check the API URL and credentials (token may have expired), then retry.".into(),
+                        ],
+                    };
+                }
+                Err(e) => {
+                    return StepOutcome::Failed {
+                        error: format!("could not run oc login: {e}"),
+                        next_steps: vec!["Ensure `oc` is installed (Prerequisites), then retry.".into()],
+                    };
+                }
+            }
+        }
+
+        // Nothing supplied yet — ask for any of the supported options.
         StepOutcome::NeedsInput {
-            prompt: "Point to your existing OpenShift cluster's kubeconfig. Provide a file \
-                     path on this machine (recommended), or paste the kubeconfig contents."
+            prompt: "Connect your existing OpenShift cluster: enter its API URL and a \
+                     token (or username/password), or point to a kubeconfig file."
                 .into(),
             fields: vec![
-                InputField {
-                    key: "kubeconfig_source_path".into(),
-                    label: "Path to kubeconfig file".into(),
-                    secret: false,
-                    default: Some("~/.kube/config".into()),
-                },
-                InputField {
-                    key: "kubeconfig".into(),
-                    label: "…or paste kubeconfig contents".into(),
-                    secret: true,
-                    default: None,
-                },
+                InputField { key: "OCP_URL".into(), label: "OpenShift API URL (https://api…:6443)".into(), secret: false, default: None },
+                InputField { key: "OCP_CONSOLE_URL".into(), label: "OpenShift console URL (optional)".into(), secret: false, default: None },
+                InputField { key: "OCP_TOKEN".into(), label: "API token".into(), secret: true, default: None },
+                InputField { key: "OCP_USERNAME".into(), label: "…or username".into(), secret: false, default: None },
+                InputField { key: "OCP_PASSWORD".into(), label: "…and password".into(), secret: true, default: None },
+                InputField { key: "kubeconfig_source_path".into(), label: "…or path to a kubeconfig file".into(), secret: false, default: None },
+                InputField { key: "kubeconfig".into(), label: "…or paste kubeconfig contents".into(), secret: true, default: None },
             ],
         }
     }
@@ -218,9 +270,13 @@ mod tests {
         let c = ctx(MockCommandRunner::new(vec![]), &[], &[], art.clone());
         match ProvideKubeconfig.run(&c).await {
             StepOutcome::NeedsInput { fields, .. } => {
-                assert_eq!(fields[0].key, "kubeconfig_source_path");
-                assert_eq!(fields[1].key, "kubeconfig");
-                assert!(fields[1].secret);
+                let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
+                assert!(keys.contains(&"OCP_URL"));
+                assert!(keys.contains(&"OCP_TOKEN"));
+                assert!(keys.contains(&"kubeconfig_source_path"));
+                assert!(keys.contains(&"kubeconfig"));
+                // secrets stay masked
+                assert!(fields.iter().find(|f| f.key == "OCP_TOKEN").unwrap().secret);
             }
             o => panic!("expected NeedsInput, got {o:?}"),
         }
@@ -257,6 +313,45 @@ mod tests {
         assert_eq!(ProvideKubeconfig.run(&c).await, StepOutcome::Completed);
         let written = std::fs::read_to_string(c.kubeconfig_path()).unwrap();
         assert!(written.contains("kind: Config"));
+        std::fs::remove_dir_all(art).ok();
+    }
+
+    #[tokio::test]
+    async fn url_without_credentials_asks_for_them() {
+        let art = temp_artifacts();
+        let c = ctx(
+            MockCommandRunner::new(vec![]),
+            &[("OCP_URL", "https://api.example.com:6443")],
+            &[],
+            art.clone(),
+        );
+        match ProvideKubeconfig.run(&c).await {
+            StepOutcome::NeedsInput { fields, .. } => {
+                let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
+                assert!(keys.contains(&"OCP_TOKEN"));
+                assert!(keys.contains(&"OCP_PASSWORD"));
+            }
+            o => panic!("expected NeedsInput, got {o:?}"),
+        }
+        std::fs::remove_dir_all(art).ok();
+    }
+
+    #[tokio::test]
+    async fn url_with_token_takes_login_path() {
+        let art = temp_artifacts();
+        let c = ctx(
+            MockCommandRunner::new(vec![]),
+            &[("OCP_URL", "https://api.example.com:6443")],
+            &[("OCP_TOKEN", "sha256~abc")],
+            art.clone(),
+        );
+        // With creds present it runs `oc login` (not NeedsInput). The mock can't
+        // create the kubeconfig file, so the verify-after-login reports Failed —
+        // which still proves we took the login path rather than prompting.
+        match ProvideKubeconfig.run(&c).await {
+            StepOutcome::Failed { .. } => {}
+            o => panic!("expected Failed (mock can't write kubeconfig), got {o:?}"),
+        }
         std::fs::remove_dir_all(art).ok();
     }
 

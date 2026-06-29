@@ -5,7 +5,6 @@
 //! step. Override the port with `WXD_PORT` and the UI directory with `WXD_UI_DIR`.
 
 use std::path::PathBuf;
-use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,7 +17,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/ui")));
 
-    let token = Uuid::new_v4().to_string();
+    // Token auth is optional. By default (no WXD_TOKEN) the loopback-only server
+    // needs no token, so the bare URL just works. Set WXD_TOKEN to require one
+    // (recommended if you expose the port beyond localhost).
+    let token = std::env::var("WXD_TOKEN").unwrap_or_default();
     let orch = sw_api::default_orchestrator();
     let app = sw_api::app(orch, token.clone(), ui_dir);
 
@@ -26,10 +28,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
 
-    println!("\n  watsonx.data Easy Installer");
-    println!("  ---------------------------");
-    println!("  Open this URL in your browser (the token authenticates the UI):\n");
-    println!("    http://127.0.0.1:{}/?token={}\n", bound.port(), token);
+    println!("\n  IBM self-managed software Easy Installer");
+    println!("  ---------------------------------------");
+    if token.is_empty() {
+        println!("  Open this URL in your browser:\n");
+        println!("    http://127.0.0.1:{}/\n", bound.port());
+        println!("  (Auth disabled — loopback only. Set WXD_TOKEN to require a token.)");
+    } else {
+        println!("  Open this URL in your browser (the token authenticates the UI):\n");
+        println!("    http://127.0.0.1:{}/?token={}\n", bound.port(), token);
+    }
     println!("  API docs:  http://127.0.0.1:{}/api/openapi.yaml", bound.port());
     println!("  Press Ctrl-C to stop.\n");
 

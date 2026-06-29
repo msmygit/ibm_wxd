@@ -6,6 +6,7 @@ members = [
     "crates/sw-api",
     "crates/sw-mod-provision",
     "crates/sw-mod-existing",
+    "crates/sw-mod-prereqs",
     "crates/sw-mod-softwarehub",
     "crates/sw-mod-services",
     "crates/wxd-svc-watsonxdata",

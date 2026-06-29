@@ -22,25 +22,27 @@ pub struct AppState {
     pub ui_dir: std::path::PathBuf,
 }
 
-/// The watsonx.data services module (shared by both run modes).
-fn services_module() -> sw_mod_services::ServicesModule {
-    sw_mod_services::ServicesModule::new(vec![Arc::new(wxd_svc_watsonxdata::WatsonxDataInstaller)])
+/// The selection-driven services module (shared by both run modes). Installs the
+/// components chosen in the UI's multi-select via one `cpd-cli apply-cr`.
+fn services_module() -> sw_mod_services::ComponentsModule {
+    sw_mod_services::ComponentsModule
 }
 
-/// "Provision a new cluster" graph: preflight → provision (AWS IPI) → install
-/// Software Hub → install services (watsonx.data by default).
+/// "Provision a new cluster" graph: install prerequisites → provision (AWS IPI)
+/// → install Software Hub → install services (watsonx.data by default).
 pub fn default_registry() -> ModuleRegistry {
     ModuleRegistry::new()
-        .with(Box::new(preflight::PreflightModule))
+        .with(Box::new(sw_mod_prereqs::PrereqsModule))
         .with(Box::new(sw_mod_provision::ProvisionModule))
         .with(Box::new(sw_mod_softwarehub::SoftwareHubModule))
         .with(Box::new(services_module()))
 }
 
-/// "Use my existing cluster" graph: adopt the user's kubeconfig → install
-/// Software Hub → install services. Skips provisioning entirely.
+/// "Use my existing cluster" graph: install prerequisites → adopt the user's
+/// kubeconfig → install Software Hub → install services. Skips provisioning.
 pub fn existing_registry() -> ModuleRegistry {
     ModuleRegistry::new()
+        .with(Box::new(sw_mod_prereqs::PrereqsModule))
         .with(Box::new(sw_mod_existing::ExistingClusterModule))
         .with(Box::new(sw_mod_softwarehub::SoftwareHubModule))
         .with(Box::new(services_module()))

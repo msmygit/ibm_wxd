@@ -153,9 +153,15 @@ async fn create_run_in_existing_mode_uses_existing_graph() {
     assert_eq!(create.status(), StatusCode::CREATED);
     let run: serde_json::Value = serde_json::from_str(&body_string(create).await).unwrap();
     assert_eq!(run["mode"], "existing");
-    // Existing-cluster graph starts with adopting a kubeconfig, not provisioning.
-    let first = run["steps"][0]["id"].as_str().unwrap();
-    assert_eq!(first, "mod-existing/provide-kubeconfig");
+    // Existing-cluster graph adopts a kubeconfig and never provisions.
+    let ids: Vec<&str> = run["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"mod-existing/provide-kubeconfig"));
+    assert!(!ids.iter().any(|id| id.starts_with("mod-provision/")));
 }
 
 #[tokio::test]
@@ -213,5 +219,5 @@ async fn ui_index_is_served_at_root() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_string(resp).await;
-    assert!(body.contains("watsonx.data Easy Installer"));
+    assert!(body.contains("IBM self-managed software Easy Installer"));
 }
