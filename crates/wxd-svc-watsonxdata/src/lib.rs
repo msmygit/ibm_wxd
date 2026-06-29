@@ -59,8 +59,7 @@ impl ServiceInstaller for WatsonxDataInstaller {
         // Idempotency: if the operand already exists, this is a resume/retry of
         // an already-applied CR — skip the apply and report success.
         let existing = ctx
-            .runner()
-            .run(
+            .run_in_cluster(
                 "oc",
                 &[
                     "get".into(),
@@ -85,8 +84,7 @@ impl ServiceInstaller for WatsonxDataInstaller {
             self.component()
         ));
         let apply = ctx
-            .runner()
-            .run(
+            .run_in_cluster(
                 "cpd-cli",
                 &[
                     "manage".into(),
@@ -130,8 +128,7 @@ impl ServiceInstaller for WatsonxDataInstaller {
     async fn verify(&self, ctx: &StepContext) -> StepOutcome {
         let namespace = Self::operands_namespace(ctx);
         let check = ctx
-            .runner()
-            .run(
+            .run_in_cluster(
                 "oc",
                 &[
                     "get".into(),

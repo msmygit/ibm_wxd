@@ -51,6 +51,11 @@ impl Orchestrator {
         &self.registry
     }
 
+    /// The shared command runner, for actions outside the step graph (teardown).
+    pub fn command_runner(&self) -> Arc<dyn CommandRunner> {
+        Arc::clone(&self.runner)
+    }
+
     /// Create a fresh run from the registry, persist it, and return its state.
     pub fn create_run(&self, id: String) -> std::io::Result<RunState> {
         let state = RunState::new(id, self.registry.initial_steps());

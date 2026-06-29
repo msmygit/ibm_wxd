@@ -27,6 +27,19 @@ pub trait CommandRunner: Send + Sync {
     /// Run `program` with `args`. Returns the captured output. Implementations
     /// should not panic on a non-zero exit — they return it in `status`.
     async fn run(&self, program: &str, args: &[String]) -> std::io::Result<CommandOutput>;
+
+    /// Run `program` with `args` plus extra environment variables (e.g.
+    /// `KUBECONFIG`, so the command targets a specific cluster). The default
+    /// ignores the env and delegates to [`run`](Self::run) — mock runners keep
+    /// their existing matching/recording behavior; real runners override it.
+    async fn run_with_env(
+        &self,
+        program: &str,
+        args: &[String],
+        _env: &[(String, String)],
+    ) -> std::io::Result<CommandOutput> {
+        self.run(program, args).await
+    }
 }
 
 /// Real implementation that shells out via `tokio::process::Command`.
@@ -36,10 +49,21 @@ pub struct RealCommandRunner;
 #[async_trait]
 impl CommandRunner for RealCommandRunner {
     async fn run(&self, program: &str, args: &[String]) -> std::io::Result<CommandOutput> {
-        let out = tokio::process::Command::new(program)
-            .args(args)
-            .output()
-            .await?;
+        self.run_with_env(program, args, &[]).await
+    }
+
+    async fn run_with_env(
+        &self,
+        program: &str,
+        args: &[String],
+        env: &[(String, String)],
+    ) -> std::io::Result<CommandOutput> {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().await?;
         Ok(CommandOutput {
             status: out.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -172,5 +196,21 @@ mod tests {
         let out = runner.run("aws", &["sts".into()]).await.unwrap();
         assert!(out.success());
         assert_eq!(out.stdout, "");
+    }
+
+    #[tokio::test]
+    async fn real_runner_injects_env() {
+        // Verify run_with_env actually exports the variable to the child.
+        let runner = RealCommandRunner;
+        let out = runner
+            .run_with_env(
+                "sh",
+                &["-c".into(), "printf %s \"$KUBECONFIG\"".into()],
+                &[("KUBECONFIG".into(), "/tmp/kc.test".into())],
+            )
+            .await
+            .unwrap();
+        assert!(out.success());
+        assert_eq!(out.stdout, "/tmp/kc.test");
     }
 }

@@ -1,23 +1,48 @@
 # watsonx.data Easy Installer
 
 A guided, modular installer that takes you from **nothing** to a running **IBM
-watsonx.data** service — eventually end to end: create an OpenShift cluster on a
-cloud provider, stand up **IBM Software Hub / Cloud Pak for Data 5.4.x** (latest:
-5.4.0, `PATCH_ID=latest`), then add watsonx.data (and other services) — with a
-Carbon-themed UI showing live status, a progress tracker, clear next steps, error
-capture, and pause/resume. See the **[Roadmap](#roadmap)** for what's built vs.
-planned, and issue [#1](https://github.com/msmygit/ibm_wxd/issues/1).
+watsonx.data** service, end to end: create a self-managed OpenShift cluster on a
+cloud provider (AWS today; IBM Cloud / Azure / GCP behind the same interface),
+stand up **IBM Software Hub / Cloud Pak for Data 5.4.x** (latest: 5.4.0,
+`PATCH_ID=latest`), then add watsonx.data (and other entitled services) — with a
+simple **no-build web UI** (light/dark) showing live status, a progress tracker,
+clear next steps, error capture, and **pause/resume/retry**. See the
+**[Roadmap](#roadmap)** for status and issue
+[#1](https://github.com/msmygit/ibm_wxd/issues/1).
 
 Docs: <https://www.ibm.com/docs/en/cloud-paks/cp-data>
 
+## Run the installer
+
+```bash
+export PATH="/usr/local/opt/rust/bin:$HOME/.cargo/bin:$PATH"
+cargo run -p sw-api --bin wxd   # binds 127.0.0.1, prints a tokenized URL to open
+```
+
+Open the printed `http://127.0.0.1:<port>/?token=<token>` URL and click **Start
+install**. To provision a real (paid) AWS cluster you need `openshift-install`,
+`oc`, `helm`, `cpd-cli`, `aws` on your `PATH`, AWS credentials, a Route53 base
+domain, a Red Hat pull secret, and an IBM entitlement key — see the step-by-step
+**[Running the installer guide](docs/running-the-installer.md)**. All tests are
+hermetic (no cloud spend): `cargo test --workspace`.
+
 ## Status
 
-This repo currently ships the **first increment**: `wxd-config` — a small,
-dependency-free Rust CLI that collects the install configuration, validates it,
-and generates a correct, deterministic, source-able `cpd_vars.sh`. It contacts no
-cluster and installs nothing — it is the configuration front door the later
-install modules consume. The cluster-provisioning, Software-Hub-install,
-service-add, and Carbon-UI modules are **not built yet** (see [Roadmap](#roadmap)).
+The installer is a **Cargo workspace** (binary: `wxd`). Generic IBM Software Hub
+infrastructure is prefixed `sw-*`; watsonx.data-specific code is `wxd-*`:
+
+- **`sw-core`** — orchestrator spine: Module/Step framework, run state machine
+  with pause/resume/retry, event bus → SSE, `CommandRunner` seam (no module
+  calls `std::process`), run store under `~/.wxd`.
+- **`sw-api`** — axum web server (OpenAPI 3.1.0 REST + SSE), serves the no-build
+  UI, binds 127.0.0.1 with a session token.
+- **`sw-mod-provision`** — `Provisioner` trait + `AwsProvisioner`
+  (`openshift-install` IPI).
+- **`sw-mod-softwarehub`** — IBM Software Hub 5.4.0 (operators → control plane →
+  readiness).
+- **`sw-mod-services`** + **`wxd-svc-watsonxdata`** — service framework +
+  watsonx.data installer (default service).
+- **`wxd-config`** — the original `cpd_vars.sh` generator (below), still shipped.
 
 ## Getting started
 
@@ -182,11 +207,15 @@ The goal is a true plug-n-play, end-to-end experience. Increments:
 | # | Module | Status |
 |---|---|---|
 | 1 | **Config generation** (`wxd-config` → `cpd_vars.sh`) | ✅ shipped |
-| 2 | **AWS OpenShift cluster provisioning** (control plane + workers; extensible to other clouds) | ⏳ planned |
-| 3 | **IBM Software Hub install** (operators → control plane → readiness) | ⏳ planned |
-| 4 | **Service framework + watsonx.data add-on** (extensible to other services) | ⏳ planned |
-| 5 | **Carbon-themed UI** — live status, progress tracker, next steps, error capture, **pause/resume** | ⏳ planned |
+| 2 | **AWS OpenShift cluster provisioning** (control plane + workers; extensible to other clouds) | ✅ shipped (`sw-mod-provision`) |
+| 3 | **IBM Software Hub install** (operators → control plane → readiness) | ✅ shipped (`sw-mod-softwarehub`) |
+| 4 | **Service framework + watsonx.data add-on** (extensible to other services) | ✅ shipped (`sw-mod-services` + `wxd-svc-watsonxdata`) |
+| 5 | **Web UI** — live status, progress tracker, next steps, error capture, **pause/resume/retry** | ✅ shipped (no-build UI, light/dark) |
+| 6 | **Existing-cluster path** (skip provisioning, install onto a cluster you already have) | ⏳ planned |
+| 7 | Other clouds (IBM Cloud / Azure / GCP) + other entitled IBM services | ⏳ planned |
 
-Design for the end-to-end system is being worked under
-`docs/superpowers/specs/` — see the latest design doc for architecture and module
-boundaries.
+The orchestrator + web server are generic IBM Software Hub infrastructure
+(`sw-*`); only watsonx.data-specific code is `wxd-*`, so other entitled IBM
+services plug in behind the same `ServiceInstaller` trait. Design lives under
+`docs/superpowers/specs/`; the end-to-end run guide is
+[`docs/running-the-installer.md`](docs/running-the-installer.md).
