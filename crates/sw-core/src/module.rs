@@ -7,6 +7,7 @@ use crate::event::{Event, EventBus};
 use crate::model::{StepId, StepOutcome, StepStatus};
 use async_trait::async_trait;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Everything a step needs while running. Constructed by the orchestrator per
@@ -18,6 +19,7 @@ pub struct StepContext {
     bus: EventBus,
     inputs: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
+    artifacts_dir: PathBuf,
 }
 
 impl StepContext {
@@ -29,6 +31,21 @@ impl StepContext {
         inputs: BTreeMap<String, String>,
         secrets: BTreeMap<String, String>,
     ) -> Self {
+        Self::with_artifacts(run_id, step_id, runner, bus, inputs, secrets, PathBuf::new())
+    }
+
+    /// Full constructor including the run's artifacts directory (kubeconfig,
+    /// install-config.yaml, generated `cpd_vars.sh`, install logs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_artifacts(
+        run_id: String,
+        step_id: StepId,
+        runner: Arc<dyn CommandRunner>,
+        bus: EventBus,
+        inputs: BTreeMap<String, String>,
+        secrets: BTreeMap<String, String>,
+        artifacts_dir: PathBuf,
+    ) -> Self {
         Self {
             run_id,
             step_id,
@@ -36,12 +53,19 @@ impl StepContext {
             bus,
             inputs,
             secrets,
+            artifacts_dir,
         }
     }
 
     /// The shared command runner — the only way a step touches the OS.
     pub fn runner(&self) -> &dyn CommandRunner {
         self.runner.as_ref()
+    }
+
+    /// Directory for this run's artifacts. Steps write kubeconfig,
+    /// install-config.yaml, generated `cpd_vars.sh`, and logs here.
+    pub fn artifacts_dir(&self) -> &Path {
+        &self.artifacts_dir
     }
 
     /// A non-secret input value collected earlier in the run.

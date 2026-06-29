@@ -164,13 +164,14 @@ impl Orchestrator {
             );
             self.store.save(state)?;
 
-            let ctx = StepContext::new(
+            let ctx = StepContext::with_artifacts(
                 state.id.clone(),
                 step_id.clone(),
                 Arc::clone(&self.runner),
                 self.bus.clone(),
                 state.inputs.clone(),
                 secrets.clone(),
+                self.store.artifacts_dir(&state.id),
             );
 
             match step.run(&ctx).await {
