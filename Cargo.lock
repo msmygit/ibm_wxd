@@ -545,10 +545,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sw-core",
+ "sw-mod-provision",
+ "sw-mod-services",
+ "sw-mod-softwarehub",
  "tokio",
  "tower",
  "tower-http",
  "uuid",
+ "wxd-svc-watsonxdata",
 ]
 
 [[package]]
@@ -560,6 +564,39 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "sw-mod-provision"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sw-core",
+ "tokio",
+]
+
+[[package]]
+name = "sw-mod-services"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sw-core",
+ "tokio",
+]
+
+[[package]]
+name = "sw-mod-softwarehub"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "sw-core",
+ "tokio",
 ]
 
 [[package]]
@@ -784,6 +821,16 @@ dependencies = [
 [[package]]
 name = "wxd-config"
 version = "0.1.0"
+
+[[package]]
+name = "wxd-svc-watsonxdata"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "sw-core",
+ "sw-mod-services",
+ "tokio",
+]
 
 [[package]]
 name = "zmij"

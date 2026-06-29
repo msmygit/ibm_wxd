@@ -19,3 +19,6 @@ cpd_vars.sh
 .buildpilot/providers
 .claude/agents
 .claude/skills
+
+# Agent worktrees (isolated subagent sandboxes)
+.claude/worktrees/

@@ -16,6 +16,10 @@ path = "src/lib.rs"
 
 [dependencies]
 sw-core = { workspace = true }
+sw-mod-provision = { path = "../sw-mod-provision" }
+sw-mod-softwarehub = { path = "../sw-mod-softwarehub" }
+sw-mod-services = { path = "../sw-mod-services" }
+wxd-svc-watsonxdata = { path = "../wxd-svc-watsonxdata" }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }

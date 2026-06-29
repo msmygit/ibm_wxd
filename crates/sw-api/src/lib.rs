@@ -21,10 +21,18 @@ pub struct AppState {
     pub ui_dir: std::path::PathBuf,
 }
 
-/// Assemble the module registry that defines an install run. Phase B modules
-/// (provision, software-hub, services) register here as they land.
+/// Assemble the module registry that defines a full install run, in order:
+/// preflight → provision cluster → install Software Hub → install services
+/// (watsonx.data by default; other entitled services plug in here).
 pub fn default_registry() -> ModuleRegistry {
-    ModuleRegistry::new().with(Box::new(preflight::PreflightModule))
+    let services = sw_mod_services::ServicesModule::new(vec![Arc::new(
+        wxd_svc_watsonxdata::WatsonxDataInstaller,
+    )]);
+    ModuleRegistry::new()
+        .with(Box::new(preflight::PreflightModule))
+        .with(Box::new(sw_mod_provision::ProvisionModule))
+        .with(Box::new(sw_mod_softwarehub::SoftwareHubModule))
+        .with(Box::new(services))
 }
 
 /// Build the full axum router from shared state.

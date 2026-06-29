@@ -1,0 +1,15 @@
+[package]
+name = "wxd-svc-watsonxdata"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "watsonx.data ServiceInstaller (component watsonx_data)"
+
+[dependencies]
+sw-core = { workspace = true }
+sw-mod-services = { path = "../sw-mod-services" }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

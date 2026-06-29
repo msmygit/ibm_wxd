@@ -1,0 +1,16 @@
+[package]
+name = "sw-mod-softwarehub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "IBM Software Hub install module: operators -> control plane -> readiness (5.4.0)"
+
+[dependencies]
+sw-core = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
