@@ -51,6 +51,11 @@ pub fn router(state: AppState) -> Router {
 // ---- auth -----------------------------------------------------------------
 
 async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    // No token configured → auth disabled (the server binds 127.0.0.1 only, so
+    // only local processes can reach it). Set WXD_TOKEN to require a token.
+    if state.token.is_empty() {
+        return next.run(req).await;
+    }
     if token_from_request(&req).as_deref() == Some(state.token.as_str()) {
         next.run(req).await
     } else {
