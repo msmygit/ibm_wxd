@@ -147,6 +147,7 @@ function collectComponents() {
 function applyMode() {
   const existing = selectedMode() === "existing";
   $("#existing-panel").hidden = !existing;
+  $("#provision-panel").hidden = existing;
   $("#provider-block").hidden = existing;
   if (existing) {
     // No cloud-provisioning creds needed; hide them all (IBM key stays).
@@ -378,6 +379,12 @@ $("#start-btn").addEventListener("click", async () => {
       for (const s of document.querySelectorAll("#existing-form input[data-existing-secret]")) {
         const v = s.value.trim();
         if (v) credentials[s.dataset.existingSecret] = v;
+      }
+    } else {
+      // Provision mode: send the cluster spec (machine types, node counts, …).
+      for (const i of document.querySelectorAll("#provision-form input[data-provision-input]")) {
+        const v = i.value.trim();
+        if (v) inputs[i.dataset.provisionInput] = v;
       }
     }
     const run = await api("/runs", {

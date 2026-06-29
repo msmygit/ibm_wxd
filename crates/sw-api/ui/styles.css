@@ -216,7 +216,7 @@ button.ghost { background: transparent; }
 .checks { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px; }
 .check { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
 .check .comp { margin-left: auto; font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
-#provider-block[hidden], #existing-panel[hidden] { display: none; }
+#provider-block[hidden], #existing-panel[hidden], #provision-panel[hidden] { display: none; }
 .chip {
   padding: 6px 12px;
   border-radius: 999px;
