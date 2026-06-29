@@ -211,8 +211,9 @@ The goal is a true plug-n-play, end-to-end experience. Increments:
 | 3 | **IBM Software Hub install** (operators → control plane → readiness) | ✅ shipped (`sw-mod-softwarehub`) |
 | 4 | **Service framework + watsonx.data add-on** (extensible to other services) | ✅ shipped (`sw-mod-services` + `wxd-svc-watsonxdata`) |
 | 5 | **Web UI** — live status, progress tracker, next steps, error capture, **pause/resume/retry** | ✅ shipped (no-build UI, light/dark) |
-| 6 | **Existing-cluster path** (skip provisioning, install onto a cluster you already have) | ⏳ planned |
-| 7 | Other clouds (IBM Cloud / Azure / GCP) + other entitled IBM services | ⏳ planned |
+| 6 | **Existing-cluster path** (skip provisioning, install onto a cluster you already have) | ✅ shipped (`sw-mod-existing`, run mode `existing`) |
+| 7 | **Cloud resource tagging** — user-provided name tags every created resource (AWS `userTags`; same input flows to other clouds) | ✅ shipped |
+| 8 | Other clouds (IBM Cloud / Azure / GCP) as working provisioners + other entitled IBM services | ⏳ planned |
 
 The orchestrator + web server are generic IBM Software Hub infrastructure
 (`sw-*`); only watsonx.data-specific code is `wxd-*`, so other entitled IBM

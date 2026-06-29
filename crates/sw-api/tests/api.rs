@@ -18,11 +18,12 @@ fn temp_orch() -> Orchestrator {
     let dir = std::env::temp_dir()
         .join(format!("wxd-api-{}", std::process::id()))
         .join(format!("t{n}"));
-    Orchestrator::new(
+    Orchestrator::with_registries(
         EventBus::new(),
         RunStore::new(dir),
         Arc::new(MockCommandRunner::new(vec![])),
-        Arc::new(sw_api::default_registry()),
+        sw_api::registries(),
+        "provision",
     )
 }
 
@@ -133,6 +134,60 @@ async fn create_run_then_fetch_it() {
     assert_eq!(get.status(), StatusCode::OK);
     let fetched = body_string(get).await;
     assert!(fetched.contains(&id));
+}
+
+#[tokio::test]
+async fn create_run_in_existing_mode_uses_existing_graph() {
+    let create = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/runs")
+                .header("x-wxd-token", TOKEN)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"existing"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let run: serde_json::Value = serde_json::from_str(&body_string(create).await).unwrap();
+    assert_eq!(run["mode"], "existing");
+    // Existing-cluster graph starts with adopting a kubeconfig, not provisioning.
+    let first = run["steps"][0]["id"].as_str().unwrap();
+    assert_eq!(first, "mod-existing/provide-kubeconfig");
+}
+
+#[tokio::test]
+async fn modules_can_be_queried_per_mode() {
+    let resp = app()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/modules?mode=existing&token={TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_string(resp).await;
+    assert!(body.contains("mod-existing"));
+    assert!(!body.contains("mod-provision"));
+}
+
+#[tokio::test]
+async fn modes_endpoint_lists_both() {
+    let resp = app()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/catalog/modes?token={TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_string(resp).await;
+    assert!(body.contains("provision") && body.contains("existing"));
 }
 
 #[tokio::test]

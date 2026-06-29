@@ -21,6 +21,19 @@ paths:
     post:
       tags: [runs]
       summary: Create and start an install run
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  description: >
+                    Run mode. `provision` (default) creates a new AWS cluster;
+                    `existing` adopts a cluster you already have (via kubeconfig).
+                  enum: [provision, existing]
       responses:
         '201':
           description: Run created and driving in the background
@@ -136,10 +149,28 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Service' }
+  /catalog/modes:
+    get:
+      tags: [catalog]
+      summary: Available run modes (e.g. provision, existing)
+      responses:
+        '200':
+          description: Mode names
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
   /modules:
     get:
       tags: [meta]
       summary: Registered modules and their step graphs
+      parameters:
+        - name: mode
+          in: query
+          required: false
+          schema: { type: string, enum: [provision, existing] }
+          description: Which run mode's step graph to return (defaults to provision).
       responses:
         '200':
           description: Module views
@@ -194,10 +225,13 @@ components:
           items: { type: string }
     RunState:
       type: object
-      required: [id, status, steps, cursor]
+      required: [id, status, mode, steps, cursor]
       properties:
         id: { type: string }
         status: { $ref: '#/components/schemas/RunStatus' }
+        mode:
+          type: string
+          enum: [provision, existing]
         cursor: { type: integer, minimum: 0 }
         steps:
           type: array

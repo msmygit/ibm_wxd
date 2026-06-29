@@ -9,6 +9,7 @@ pub mod catalog;
 pub mod preflight;
 pub mod routes;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use sw_core::{ModuleRegistry, Orchestrator};
 
@@ -21,18 +22,36 @@ pub struct AppState {
     pub ui_dir: std::path::PathBuf,
 }
 
-/// Assemble the module registry that defines a full install run, in order:
-/// preflight → provision cluster → install Software Hub → install services
-/// (watsonx.data by default; other entitled services plug in here).
+/// The watsonx.data services module (shared by both run modes).
+fn services_module() -> sw_mod_services::ServicesModule {
+    sw_mod_services::ServicesModule::new(vec![Arc::new(wxd_svc_watsonxdata::WatsonxDataInstaller)])
+}
+
+/// "Provision a new cluster" graph: preflight → provision (AWS IPI) → install
+/// Software Hub → install services (watsonx.data by default).
 pub fn default_registry() -> ModuleRegistry {
-    let services = sw_mod_services::ServicesModule::new(vec![Arc::new(
-        wxd_svc_watsonxdata::WatsonxDataInstaller,
-    )]);
     ModuleRegistry::new()
         .with(Box::new(preflight::PreflightModule))
         .with(Box::new(sw_mod_provision::ProvisionModule))
         .with(Box::new(sw_mod_softwarehub::SoftwareHubModule))
-        .with(Box::new(services))
+        .with(Box::new(services_module()))
+}
+
+/// "Use my existing cluster" graph: adopt the user's kubeconfig → install
+/// Software Hub → install services. Skips provisioning entirely.
+pub fn existing_registry() -> ModuleRegistry {
+    ModuleRegistry::new()
+        .with(Box::new(sw_mod_existing::ExistingClusterModule))
+        .with(Box::new(sw_mod_softwarehub::SoftwareHubModule))
+        .with(Box::new(services_module()))
+}
+
+/// The mode → registry map both run paths share.
+pub fn registries() -> BTreeMap<String, Arc<ModuleRegistry>> {
+    let mut m = BTreeMap::new();
+    m.insert("provision".to_string(), Arc::new(default_registry()));
+    m.insert("existing".to_string(), Arc::new(existing_registry()));
+    m
 }
 
 /// Build the full axum router from shared state.
@@ -50,13 +69,14 @@ pub fn app(orch: Orchestrator, token: impl Into<String>, ui_dir: impl Into<std::
     build_router(state)
 }
 
-/// Build a ready-to-serve orchestrator with the default registry, the real
-/// command runner, and the home-dir run store.
+/// Build a ready-to-serve orchestrator with both run modes (provision +
+/// existing), the real command runner, and the home-dir run store.
 pub fn default_orchestrator() -> Orchestrator {
-    Orchestrator::new(
+    Orchestrator::with_registries(
         sw_core::EventBus::new(),
         sw_core::RunStore::default_home(),
         Arc::new(sw_core::RealCommandRunner),
-        Arc::new(default_registry()),
+        registries(),
+        "provision",
     )
 }

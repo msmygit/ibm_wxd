@@ -220,12 +220,26 @@ function connectEvents(id) {
 }
 
 // ---- controls -------------------------------------------------------------
+function selectedMode() {
+  const checked = document.querySelector('input[name="mode"]:checked');
+  return checked ? checked.value : "provision";
+}
+
 $("#start-btn").addEventListener("click", async () => {
   try {
     $("#log").textContent = "";
-    const run = await api("/runs", { method: "POST" });
+    const mode = selectedMode();
+    const run = await api("/runs", {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+    });
     currentRunId = run.id;
-    banner("info", "Install started.");
+    banner(
+      "info",
+      mode === "existing"
+        ? "Install started against your existing cluster."
+        : "Install started — provisioning a new AWS cluster."
+    );
     connectEvents(run.id);
     renderRun(run);
   } catch (e) {

@@ -13,28 +13,47 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 /// Shared, cloneable orchestrator. One per process; safe to hand to many request
-/// handlers.
+/// handlers. Holds one or more registries keyed by **mode** (e.g. `"provision"`
+/// for "create a new cluster" vs `"existing"` for "use my cluster"); a run
+/// records its mode so resume/retry use the same step graph.
 #[derive(Clone)]
 pub struct Orchestrator {
     bus: EventBus,
     store: RunStore,
     runner: Arc<dyn CommandRunner>,
-    registry: Arc<ModuleRegistry>,
+    registries: Arc<BTreeMap<String, Arc<ModuleRegistry>>>,
+    default_mode: String,
     paused: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Orchestrator {
+    /// Single-registry orchestrator (mode `"provision"`). Back-compat constructor.
     pub fn new(
         bus: EventBus,
         store: RunStore,
         runner: Arc<dyn CommandRunner>,
         registry: Arc<ModuleRegistry>,
     ) -> Self {
+        let mut map = BTreeMap::new();
+        map.insert("provision".to_string(), registry);
+        Self::with_registries(bus, store, runner, map, "provision")
+    }
+
+    /// Multi-mode orchestrator. `registries` maps a mode name to its step graph;
+    /// `default_mode` is used when a run doesn't specify one.
+    pub fn with_registries(
+        bus: EventBus,
+        store: RunStore,
+        runner: Arc<dyn CommandRunner>,
+        registries: BTreeMap<String, Arc<ModuleRegistry>>,
+        default_mode: impl Into<String>,
+    ) -> Self {
         Self {
             bus,
             store,
             runner,
-            registry,
+            registries: Arc::new(registries),
+            default_mode: default_mode.into(),
             paused: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -47,8 +66,22 @@ impl Orchestrator {
         &self.store
     }
 
+    /// The registry for a given mode, falling back to the default mode.
+    pub fn registry_for(&self, mode: &str) -> &ModuleRegistry {
+        self.registries
+            .get(mode)
+            .or_else(|| self.registries.get(&self.default_mode))
+            .expect("default-mode registry must exist")
+    }
+
+    /// The default-mode registry (used by `/modules` with no mode specified).
     pub fn registry(&self) -> &ModuleRegistry {
-        &self.registry
+        self.registry_for(&self.default_mode)
+    }
+
+    /// Available mode names (for the UI to offer "new cluster" vs "existing").
+    pub fn modes(&self) -> Vec<String> {
+        self.registries.keys().cloned().collect()
     }
 
     /// The shared command runner, for actions outside the step graph (teardown).
@@ -56,9 +89,16 @@ impl Orchestrator {
         Arc::clone(&self.runner)
     }
 
-    /// Create a fresh run from the registry, persist it, and return its state.
+    /// Create a fresh run in the default mode.
     pub fn create_run(&self, id: String) -> std::io::Result<RunState> {
-        let state = RunState::new(id, self.registry.initial_steps());
+        self.create_run_mode(id, self.default_mode.clone())
+    }
+
+    /// Create a fresh run in an explicit mode (e.g. `"existing"`).
+    pub fn create_run_mode(&self, id: String, mode: String) -> std::io::Result<RunState> {
+        let registry = self.registry_for(&mode);
+        let mut state = RunState::new(id, registry.initial_steps());
+        state.mode = mode;
         self.store.save(&state)?;
         Ok(state)
     }
@@ -145,7 +185,7 @@ impl Orchestrator {
         self.set_run_status(state, RunStatus::Running);
         self.store.save(state)?;
 
-        let flat = self.registry.flatten();
+        let flat = self.registry_for(&state.mode).flatten();
         let secrets = self.store.load_secrets(&state.id)?;
 
         while state.cursor < state.steps.len() {
