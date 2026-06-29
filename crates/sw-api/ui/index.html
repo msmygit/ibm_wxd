@@ -38,6 +38,39 @@
       <div id="status-banner" class="banner" hidden></div>
     </section>
 
+    <section class="panel" id="credentials-panel" aria-labelledby="credentials-title">
+      <h2 id="credentials-title">Cloud credentials (optional)</h2>
+      <p class="muted">
+        Enter API keys to use for this run. Leave blank to fall back to
+        <code>~/.aws/credentials</code> and <code>~/.ibm/IBM_CLOUD_API_KEY</code> on
+        this machine. Values are stored only in the run's <code>0600</code> secret
+        file and masked everywhere.
+      </p>
+      <form id="creds-form" class="input-form">
+        <h3>Amazon Web Services</h3>
+        <label><span>AWS Access Key ID</span>
+          <input type="text" autocomplete="off" data-cred="AWS_ACCESS_KEY_ID" /></label>
+        <label><span>AWS Secret Access Key</span>
+          <input type="password" autocomplete="new-password" data-cred="AWS_SECRET_ACCESS_KEY" /></label>
+        <label><span>AWS Session Token (optional)</span>
+          <input type="password" autocomplete="new-password" data-cred="AWS_SESSION_TOKEN" /></label>
+
+        <h3>IBM</h3>
+        <label><span>IBM entitlement key</span>
+          <input type="password" autocomplete="new-password" data-cred="IBM_ENTITLEMENT_KEY" /></label>
+        <label><span>IBM Cloud API key</span>
+          <input type="password" autocomplete="new-password" data-cred="IBMCLOUD_API_KEY" /></label>
+
+        <h3>Microsoft Azure <span class="muted">(provisioner coming soon)</span></h3>
+        <label><span>Azure client secret (ARM_CLIENT_SECRET)</span>
+          <input type="password" autocomplete="new-password" data-cred="ARM_CLIENT_SECRET" /></label>
+
+        <h3>Google Cloud <span class="muted">(provisioner coming soon)</span></h3>
+        <label><span>GCP service-account JSON (GOOGLE_CREDENTIALS)</span>
+          <input type="password" autocomplete="new-password" data-cred="GOOGLE_CREDENTIALS" /></label>
+      </form>
+    </section>
+
     <section class="panel" id="progress-panel" aria-labelledby="progress-title">
       <h2 id="progress-title">Progress</h2>
       <ol id="steps" class="steps" aria-live="polite"></ol>

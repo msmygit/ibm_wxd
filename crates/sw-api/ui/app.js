@@ -225,13 +225,24 @@ function selectedMode() {
   return checked ? checked.value : "provision";
 }
 
+// Collect non-empty cloud credentials from the credentials panel.
+function collectCredentials() {
+  const creds = {};
+  for (const input of document.querySelectorAll("#creds-form input[data-cred]")) {
+    const v = input.value.trim();
+    if (v) creds[input.dataset.cred] = v;
+  }
+  return creds;
+}
+
 $("#start-btn").addEventListener("click", async () => {
   try {
     $("#log").textContent = "";
     const mode = selectedMode();
+    const credentials = collectCredentials();
     const run = await api("/runs", {
       method: "POST",
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ mode, credentials }),
     });
     currentRunId = run.id;
     banner(

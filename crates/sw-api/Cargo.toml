@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 sw-core = { workspace = true }
+sw-mod-prereqs = { path = "../sw-mod-prereqs" }
 sw-mod-provision = { path = "../sw-mod-provision" }
 sw-mod-existing = { path = "../sw-mod-existing" }
 sw-mod-softwarehub = { path = "../sw-mod-softwarehub" }

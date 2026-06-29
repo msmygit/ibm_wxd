@@ -109,7 +109,7 @@ impl Provisioner for AwsProvisioner {
             dir_str,
         ];
 
-        match ctx.runner().run("openshift-install", &args).await {
+        match ctx.runner().run_with_env("openshift-install", &args, &aws_env(ctx)).await {
             Ok(out) if out.success() => {
                 ctx.log("cluster provisioned");
                 publish_kubeconfig(ctx);
@@ -155,7 +155,7 @@ impl Provisioner for AwsProvisioner {
             "--dir".to_string(),
             dir_str,
         ];
-        match ctx.runner().run("openshift-install", &args).await {
+        match ctx.runner().run_with_env("openshift-install", &args, &aws_env(ctx)).await {
             Ok(out) if out.success() => StepOutcome::Completed,
             Ok(out) => StepOutcome::Failed {
                 error: format!(
@@ -426,9 +426,10 @@ impl PreflightAwsStep {
         runner: &dyn CommandRunner,
         program: &str,
         args: &[String],
+        env: &[(String, String)],
         what: &str,
     ) -> Result<(), String> {
-        match runner.run(program, args).await {
+        match runner.run_with_env(program, args, env).await {
             Ok(out) if out.success() => Ok(()),
             Ok(out) => Err(format!(
                 "{what} failed (exit {}): {}",
@@ -438,6 +439,21 @@ impl PreflightAwsStep {
             Err(e) => Err(format!("{what}: could not run `{program}`: {e}")),
         }
     }
+}
+
+/// AWS credentials/region passed to `openshift-install`/`aws`, sourced from run
+/// secrets (entered in the UI). Empty when the user relies on `~/.aws` instead.
+fn aws_env(ctx: &StepContext) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"] {
+        if let Some(v) = ctx.secret(key).filter(|v| !v.is_empty()) {
+            env.push((key.to_string(), v.to_string()));
+        }
+    }
+    if let Some(r) = ctx.input("region").filter(|v| !v.is_empty()) {
+        env.push(("AWS_DEFAULT_REGION".to_string(), r.to_string()));
+    }
+    env
 }
 
 #[async_trait]
@@ -452,6 +468,7 @@ impl Step for PreflightAwsStep {
 
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let runner = ctx.runner();
+        let env = aws_env(ctx);
 
         let checks = [
             (
@@ -469,7 +486,7 @@ impl Step for PreflightAwsStep {
 
         for (program, args, what) in checks {
             ctx.log(format!("preflight: {what}"));
-            if let Err(error) = Self::check(runner, program, &args, what).await {
+            if let Err(error) = Self::check(runner, program, &args, &env, what).await {
                 return StepOutcome::Failed {
                     error,
                     next_steps: vec![

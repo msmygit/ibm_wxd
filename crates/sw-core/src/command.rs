@@ -60,6 +60,15 @@ impl CommandRunner for RealCommandRunner {
     ) -> std::io::Result<CommandOutput> {
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args);
+        // Put the installer's private tools dir (`~/.wxd/bin`, where the prereqs
+        // module installs oc/helm/openshift-install/cpd-cli) at the front of PATH
+        // so every step finds them without touching the user's system PATH.
+        if let Some(home) = std::env::var_os("HOME") {
+            let wxd_bin = std::path::Path::new(&home).join(".wxd").join("bin");
+            let current = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", wxd_bin.display(), current);
+            cmd.env("PATH", new_path);
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }

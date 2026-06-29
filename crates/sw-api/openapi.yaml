@@ -34,6 +34,15 @@ paths:
                     Run mode. `provision` (default) creates a new AWS cluster;
                     `existing` adopts a cluster you already have (via kubeconfig).
                   enum: [provision, existing]
+                credentials:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: >
+                    Optional cloud/IBM credentials entered in the UI, stored as
+                    run secrets (e.g. AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+                    IBM_ENTITLEMENT_KEY, IBMCLOUD_API_KEY, ARM_CLIENT_SECRET,
+                    GOOGLE_CREDENTIALS). Blank fields fall back to ~/.aws and
+                    ~/.ibm/IBM_CLOUD_API_KEY on the host.
       responses:
         '201':
           description: Run created and driving in the background

@@ -19,12 +19,22 @@ export PATH="/usr/local/opt/rust/bin:$HOME/.cargo/bin:$PATH"
 cargo run -p sw-api --bin wxd   # binds 127.0.0.1, prints a tokenized URL to open
 ```
 
-Open the printed `http://127.0.0.1:<port>/?token=<token>` URL and click **Start
-install**. To provision a real (paid) AWS cluster you need `openshift-install`,
-`oc`, `helm`, `cpd-cli`, `aws` on your `PATH`, AWS credentials, a Route53 base
-domain, a Red Hat pull secret, and an IBM entitlement key — see the step-by-step
-**[Running the installer guide](docs/running-the-installer.md)**. All tests are
-hermetic (no cloud spend): `cargo test --workspace`.
+Open the printed `http://127.0.0.1:<port>/?token=<token>` URL, choose a mode, and
+click **Start install**. The tool **auto-installs the CLIs it needs**
+(`oc`, `helm`, `openshift-install`, `cpd-cli`) into `~/.wxd/bin` — you don't
+pre-install them. Two run modes:
+
+- **Provision a new AWS cluster** — creates OpenShift (IPI), installs Software Hub
+  5.4.0 + watsonx.data. Needs AWS credentials, a Route53 base domain, a Red Hat
+  pull secret, and an IBM entitlement key.
+- **Use an existing cluster** — give it a kubeconfig; it installs Software Hub +
+  watsonx.data onto your cluster (no provisioning spend).
+
+Supply credentials in the UI's **Cloud credentials** panel (AWS / IBM / Azure /
+GCP), or leave them blank to fall back to `~/.aws/credentials` and
+`~/.ibm/IBM_CLOUD_API_KEY`. Every created cloud resource is tagged with the name
+you provide. Full walkthrough: **[Running the installer guide](docs/running-the-installer.md)**.
+All tests are hermetic (no cloud spend): `cargo test --workspace`.
 
 ## Status
 
@@ -36,8 +46,11 @@ infrastructure is prefixed `sw-*`; watsonx.data-specific code is `wxd-*`:
   calls `std::process`), run store under `~/.wxd`.
 - **`sw-api`** — axum web server (OpenAPI 3.1.0 REST + SSE), serves the no-build
   UI, binds 127.0.0.1 with a session token.
+- **`sw-mod-prereqs`** — auto-installs `oc` / `helm` / `openshift-install` /
+  `cpd-cli` into `~/.wxd/bin`.
+- **`sw-mod-existing`** — adopt an existing cluster via kubeconfig (mode `existing`).
 - **`sw-mod-provision`** — `Provisioner` trait + `AwsProvisioner`
-  (`openshift-install` IPI).
+  (`openshift-install` IPI), tags every resource with your name.
 - **`sw-mod-softwarehub`** — IBM Software Hub 5.4.0 (operators → control plane →
   readiness).
 - **`sw-mod-services`** + **`wxd-svc-watsonxdata`** — service framework +
@@ -213,7 +226,8 @@ The goal is a true plug-n-play, end-to-end experience. Increments:
 | 5 | **Web UI** — live status, progress tracker, next steps, error capture, **pause/resume/retry** | ✅ shipped (no-build UI, light/dark) |
 | 6 | **Existing-cluster path** (skip provisioning, install onto a cluster you already have) | ✅ shipped (`sw-mod-existing`, run mode `existing`) |
 | 7 | **Cloud resource tagging** — user-provided name tags every created resource (AWS `userTags`; same input flows to other clouds) | ✅ shipped |
-| 8 | Other clouds (IBM Cloud / Azure / GCP) as working provisioners + other entitled IBM services | ⏳ planned |
+| 8 | **Prerequisite auto-install** (`oc`/`helm`/`openshift-install`/`cpd-cli` into `~/.wxd/bin`) + UI credential entry (AWS/IBM/Azure/GCP) | ✅ shipped (`sw-mod-prereqs`) |
+| 9 | Other clouds (IBM Cloud / Azure / GCP) as working provisioners + other entitled IBM services | ⏳ planned |
 
 The orchestrator + web server are generic IBM Software Hub infrastructure
 (`sw-*`); only watsonx.data-specific code is `wxd-*`, so other entitled IBM

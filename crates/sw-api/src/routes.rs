@@ -81,23 +81,66 @@ fn err500(e: impl std::fmt::Display) -> Response {
 
 // ---- run handlers ---------------------------------------------------------
 
+/// Seed a run's secret store from well-known credential files on the host, if
+/// present. Currently: `~/.ibm/IBM_CLOUD_API_KEY` → `IBM_ENTITLEMENT_KEY`.
+fn preload_known_secrets(store: &sw_core::RunStore, id: &str) {
+    let Some(home) = std::env::var_os("HOME") else { return };
+    let path = std::path::Path::new(&home).join(".ibm").join("IBM_CLOUD_API_KEY");
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        let key = contents.trim().to_string();
+        if !key.is_empty() {
+            let mut secrets = store.load_secrets(id).unwrap_or_default();
+            secrets.entry("IBM_ENTITLEMENT_KEY".to_string()).or_insert(key);
+            let _ = store.save_secrets(id, &secrets);
+        }
+    }
+}
+
+/// Store non-empty UI-entered credentials into the run's `0600` secret store.
+fn store_ui_credentials(store: &sw_core::RunStore, id: &str, creds: &BTreeMap<String, String>) {
+    let provided: BTreeMap<String, String> = creds
+        .iter()
+        .filter(|(_, v)| !v.trim().is_empty())
+        .map(|(k, v)| (k.clone(), v.trim().to_string()))
+        .collect();
+    if provided.is_empty() {
+        return;
+    }
+    let mut secrets = store.load_secrets(id).unwrap_or_default();
+    secrets.extend(provided);
+    let _ = store.save_secrets(id, &secrets);
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct CreateRunBody {
     /// `"provision"` (new AWS cluster) or `"existing"` (adopt a kubeconfig).
     #[serde(default)]
     mode: Option<String>,
+    /// Cloud / IBM credentials entered in the UI, stored as run secrets
+    /// (e.g. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `IBM_ENTITLEMENT_KEY`,
+    /// `IBMCLOUD_API_KEY`, `ARM_CLIENT_SECRET`, `GOOGLE_CREDENTIALS`). Optional —
+    /// blank fields fall back to `~/.aws` / `~/.ibm`.
+    #[serde(default)]
+    credentials: BTreeMap<String, String>,
 }
 
 async fn create_run(
     State(state): State<AppState>,
     body: Option<axum::Json<CreateRunBody>>,
 ) -> Response {
-    let mode = body
-        .and_then(|axum::Json(b)| b.mode)
-        .unwrap_or_else(|| "provision".to_string());
+    let (mode, ui_creds) = match body {
+        Some(axum::Json(b)) => (b.mode.unwrap_or_else(|| "provision".to_string()), b.credentials),
+        None => ("provision".to_string(), BTreeMap::new()),
+    };
     let id = Uuid::new_v4().to_string();
     match state.orch.create_run_mode(id.clone(), mode) {
         Ok(run) => {
+            // Convenience: preload credentials from well-known files so the user
+            // isn't asked to paste them. AWS creds are read from ~/.aws by the
+            // tools themselves; here we seed the IBM entitlement key.
+            preload_known_secrets(state.orch.store(), &id);
+            // UI-entered credentials override / supplement the file-based ones.
+            store_ui_credentials(state.orch.store(), &id, &ui_creds);
             // Drive the run in the background; the UI watches progress via SSE.
             let orch = state.orch.clone();
             tokio::spawn(async move {
