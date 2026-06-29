@@ -416,7 +416,29 @@ $("#retry-btn").addEventListener("click", async () => {
 });
 $("#destroy-btn").addEventListener("click", async () => {
   if (!currentRunId) return;
-  if (!window.confirm("Destroy the provisioned OpenShift cluster? This removes its AWS resources.")) return;
+  // First confirmation: explicit, spells out what is destroyed.
+  const proceed = window.confirm(
+    "⚠️ DESTROY the provisioned OpenShift cluster?\n\n" +
+      "This permanently deletes its cloud resources (EC2 instances, VPC, subnets, " +
+      "NAT/ELB, EBS volumes, Route53 records). This cannot be undone."
+  );
+  if (!proceed) return;
+  // Second confirmation: type the cluster name to match.
+  let name = "destroy";
+  try {
+    const run = await api(`/runs/${currentRunId}`);
+    name = (run.inputs && run.inputs.cluster_name) || "destroy";
+  } catch {
+    /* fall back to requiring the literal word "destroy" */
+  }
+  const typed = window.prompt(
+    `Final confirmation — type the cluster name "${name}" to destroy it:`
+  );
+  if (typed === null) return; // cancelled
+  if (typed.trim() !== name) {
+    banner("fail", "Teardown cancelled — the name you typed did not match.");
+    return;
+  }
   banner("info", "Destroying cluster — watch the log for progress.");
   await api(`/runs/${currentRunId}/destroy`, { method: "POST" }).catch((e) =>
     banner("fail", `Could not start teardown: ${e.message}`)
