@@ -5,6 +5,7 @@
 use crate::command::{CommandOutput, CommandRunner};
 use crate::event::{Event, EventBus};
 use crate::model::{StepId, StepOutcome, StepStatus};
+use crate::store::RunStore;
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,10 @@ pub struct StepContext {
     inputs: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
     artifacts_dir: PathBuf,
+    /// When set, step-emitted `Log`/`Progress` events are appended to the run's
+    /// `events.log` (not just published to live subscribers) so the live log —
+    /// including the `$ command` echoes — survives a page refresh / reconnect.
+    store: Option<RunStore>,
 }
 
 impl StepContext {
@@ -54,6 +59,23 @@ impl StepContext {
             inputs,
             secrets,
             artifacts_dir,
+            store: None,
+        }
+    }
+
+    /// Enable persistence of step-emitted `Log`/`Progress` events to the run's
+    /// `events.log`. The orchestrator turns this on; tests leave it off.
+    pub fn with_persistence(mut self, store: RunStore) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Publish an event to live subscribers and, when persistence is enabled,
+    /// append it to the run's `events.log` so it replays after a reconnect.
+    fn emit(&self, event: Event) {
+        self.bus.publish(event.clone());
+        if let Some(store) = &self.store {
+            let _ = store.append_event(&self.run_id, &event);
         }
     }
 
@@ -138,17 +160,17 @@ impl StepContext {
         self.secrets.get(key).map(String::as_str)
     }
 
-    /// Emit a log line for this step.
+    /// Emit a log line for this step. Persisted to `events.log` when enabled.
     pub fn log(&self, line: impl Into<String>) {
-        self.bus.publish(Event::Log {
+        self.emit(Event::Log {
             step: self.step_id.clone(),
             line: line.into(),
         });
     }
 
-    /// Emit coarse progress (clamped to 0..=100).
+    /// Emit coarse progress (clamped to 0..=100). Persisted when enabled.
     pub fn progress(&self, percent: u8) {
-        self.bus.publish(Event::Progress {
+        self.emit(Event::Progress {
             step: self.step_id.clone(),
             percent: percent.min(100),
         });
@@ -259,6 +281,37 @@ mod tests {
             *self.last_env.lock().unwrap() = env.to_vec();
             self.run(_p, _a).await
         }
+    }
+
+    #[tokio::test]
+    async fn step_logs_persist_to_events_log_when_enabled() {
+        // With persistence on, ctx.log lines (incl. the `$ cmd` echoes) are
+        // appended to events.log so they survive a UI refresh / reconnect.
+        let tmp = std::env::temp_dir().join(format!("wxd-persist-{}", std::process::id()));
+        let store = crate::store::RunStore::new(&tmp);
+        let ctx = StepContext::new(
+            "run-persist".into(),
+            "m/step".into(),
+            Arc::new(MockCommandRunner::new(vec![])),
+            EventBus::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )
+        .with_persistence(store.clone());
+        ctx.run("aws", &["route53".into(), "list-hosted-zones".into()]).await.unwrap();
+        ctx.log("done");
+
+        let events = store.replay_events("run-persist").unwrap();
+        let lines: Vec<String> = events
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Log { line, .. } => Some(line),
+                _ => None,
+            })
+            .collect();
+        assert!(lines.iter().any(|l| l == "$ aws route53 list-hosted-zones"), "got {lines:?}");
+        assert!(lines.iter().any(|l| l == "done"));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]

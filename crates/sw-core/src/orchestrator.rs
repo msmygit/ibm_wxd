@@ -217,7 +217,8 @@ impl Orchestrator {
                 state.inputs.clone(),
                 secrets.clone(),
                 self.store.artifacts_dir(&state.id),
-            );
+            )
+            .with_persistence(self.store.clone());
 
             match step.run(&ctx).await {
                 StepOutcome::Completed => {
