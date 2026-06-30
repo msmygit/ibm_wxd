@@ -105,12 +105,21 @@ async function renderProvisionSpec(provider) {
       return;
     }
     title.textContent = `Cluster spec (new ${name} cluster)`;
+    // Spec fields with no default must be supplied (except known-optional ones).
+    const OPTIONAL = new Set(["resource_tags", "ssh_key"]);
     for (const f of fields) {
-      const input = el("input", {
-        attrs: { type: f.secret ? "password" : "text", "data-provision-input": f.key, autocomplete: "off" },
-      });
+      const required = f.default == null && !OPTIONAL.has(f.key);
+      const attrs = { type: f.secret ? "password" : "text", "data-provision-input": f.key, autocomplete: "off" };
+      if (required) attrs.required = "required";
+      if (f.key === "cluster_name") {
+        attrs.pattern = "[a-z0-9]([-a-z0-9.]*[a-z0-9])?";
+        attrs.title = "Lowercase letters, numbers, '-' and '.'; must start and end with a letter or number.";
+      }
+      const input = el("input", { attrs });
       if (f.default != null) input.value = f.default;
-      form.appendChild(el("label", {}, [el("span", { text: f.label }), input]));
+      const labelText = el("span", { text: f.label });
+      if (required) labelText.appendChild(el("span", { class: "req", text: " *" }));
+      form.appendChild(el("label", {}, [labelText, input]));
     }
   } catch (e) {
     banner("fail", `Could not load cluster spec: ${e.message}`);
@@ -232,7 +241,23 @@ async function loadPrereqs() {
   }
 }
 
-$("#prereqs-refresh-btn").addEventListener("click", loadPrereqs);
+$("#prereqs-refresh-btn").addEventListener("click", async () => {
+  const btn = $("#prereqs-refresh-btn");
+  btn.disabled = true;
+  prereqBanner("info", "Re-checking prerequisites…");
+  try {
+    const list = await api("/prereqs");
+    const missing = renderPrereqs(list);
+    prereqBanner(
+      missing ? "info" : "ok",
+      missing ? "Some prerequisites are missing — see the rows above." : "All prerequisites are installed."
+    );
+  } catch (e) {
+    prereqBanner("fail", `Could not re-check: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
 $("#prereqs-install-btn").addEventListener("click", async () => {
   const btn = $("#prereqs-install-btn");
   btn.disabled = true;
@@ -415,8 +440,14 @@ $("#start-btn").addEventListener("click", async () => {
         if (v) credentials[s.dataset.existingSecret] = v;
       }
     } else {
-      // Provision mode: send the cluster spec (machine types, node counts, …).
-      for (const i of document.querySelectorAll("#provision-form input[data-provision-input]")) {
+      // Provision mode: validate required spec fields natively (highlights the
+      // offending field in red and shows a message), then collect.
+      const pf = document.getElementById("provision-form");
+      if (!pf.reportValidity()) {
+        banner("fail", "Please complete the highlighted required cluster-spec field(s).");
+        return;
+      }
+      for (const i of pf.querySelectorAll("input[data-provision-input]")) {
         const v = i.value.trim();
         if (v) inputs[i.dataset.provisionInput] = v;
       }
