@@ -179,6 +179,116 @@ fn restore_metadata_if_missing(ctx: &StepContext) -> bool {
     false
 }
 
+/// The cluster infra ID (e.g. `swwxd-w4lcm`), read from the provisioner's
+/// `metadata.json`. It tags every cluster resource and disambiguates the VPC.
+/// Mirrors the storage module's helper.
+fn infra_id(ctx: &StepContext) -> Option<String> {
+    let path = ctx.artifacts_dir().join("cluster").join("metadata.json");
+    let body = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&body).ok()?;
+    v.get("infraID").and_then(|x| x.as_str()).map(String::from)
+}
+
+/// First filesystem id in `aws efs describe-file-systems` JSON, if any (handles
+/// both the `FileSystems[]` list and a bare object). Copied from the storage
+/// module so destroy can locate the EFS filesystem to tear down.
+fn parse_fs_id(json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    if let Some(id) = v.get("FileSystemId").and_then(|x| x.as_str()) {
+        return Some(id.to_string());
+    }
+    v.get("FileSystems")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first())
+        .and_then(|f| f.get("FileSystemId"))
+        .and_then(|x| x.as_str())
+        .map(String::from)
+}
+
+/// Mount-target ids from `aws efs describe-mount-targets` JSON.
+fn parse_mount_target_ids(json: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.get("MountTargets").and_then(|m| m.as_array()).cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("MountTargetId").and_then(|x| x.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Resource ARNs from `aws resourcegroupstaggingapi get-resources` JSON.
+fn parse_resource_arns(json: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.get("ResourceTagMappingList").and_then(|l| l.as_array()).cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("ResourceARN").and_then(|x| x.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A still-tagged AWS resource extracted from an ARN.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemainingResource {
+    service: String,
+    resource_type: String,
+    id: String,
+    billable: bool,
+}
+
+/// Parse an AWS ARN into `(service, resource_type, id)`.
+///
+/// Handles both ARN shapes:
+///   - `arn:aws:<service>:<region>:<acct>:<resourcetype>/<id>`
+///   - `arn:aws:<service>:<region>:<acct>:<resourcetype>:<id>`
+/// When the resource portion has no separator (e.g. an S3 bucket
+/// `arn:aws:s3:::bucket`), the whole resource is treated as the id with an empty
+/// resource_type.
+fn parse_arn(arn: &str) -> (String, String, String) {
+    let parts: Vec<&str> = arn.splitn(6, ':').collect();
+    if parts.len() < 6 {
+        // Not a well-formed ARN — return it as an opaque id.
+        return (String::new(), String::new(), arn.to_string());
+    }
+    let service = parts[2].to_string();
+    let resource = parts[5];
+    // The resource portion separates type and id by '/' or ':'.
+    if let Some((rtype, id)) = resource.split_once('/') {
+        (service, rtype.to_string(), id.to_string())
+    } else if let Some((rtype, id)) = resource.split_once(':') {
+        (service, rtype.to_string(), id.to_string())
+    } else {
+        (service, String::new(), resource.to_string())
+    }
+}
+
+/// Whether a resource type incurs ongoing AWS charges and so is worth flagging
+/// loudly when it survives a destroy.
+fn is_billable(resource_type: &str) -> bool {
+    let t = resource_type.to_ascii_lowercase();
+    matches!(
+        t.as_str(),
+        "instance"
+            | "natgateway"
+            | "elastic-ip"
+            | "eip"
+            | "address"
+            | "load-balancer"
+            | "elb"
+            | "elbv2"
+            | "volume"
+            | "file-system"
+            | "efs"
+            | "db"
+            | "rds"
+            | "fsx"
+    )
+}
+
 /// Expand a leading `~/` to `$HOME` for user-supplied file paths.
 fn expand_tilde(p: &str) -> std::path::PathBuf {
     if let Some(rest) = p.strip_prefix("~/") {
@@ -393,6 +503,19 @@ impl Provisioner for AwsProvisioner {
         if restore_metadata_if_missing(ctx) {
             ctx.log("restored metadata.json from backup for destroy");
         }
+
+        // Read the infra ID once: it drives both EFS teardown and the report.
+        let infra = infra_id(ctx);
+
+        // EFS is created by the storage module and is NOT removed by
+        // openshift-install. Its mount targets keep ENIs in the cluster subnets,
+        // which can block VPC deletion — so tear EFS down first, best-effort.
+        if let Some(infra) = infra.as_deref() {
+            teardown_efs(ctx, infra).await;
+        } else {
+            ctx.log("warning: could not read cluster infra ID (metadata.json) — skipping EFS teardown");
+        }
+
         ctx.log("destroying OpenShift cluster via openshift-install");
         let args = vec![
             "destroy".to_string(),
@@ -400,7 +523,7 @@ impl Provisioner for AwsProvisioner {
             "--dir".to_string(),
             dir_str,
         ];
-        match ctx.run_with_env("openshift-install", &args, &aws_env(ctx)).await {
+        let outcome = match ctx.run_with_env("openshift-install", &args, &aws_env(ctx)).await {
             Ok(out) if out.success() => StepOutcome::Completed,
             Ok(out) => StepOutcome::Failed {
                 error: format!(
@@ -421,7 +544,249 @@ impl Provisioner for AwsProvisioner {
                     "Ensure openshift-install is installed and on PATH.".to_string(),
                 ],
             },
+        };
+
+        // Always emit the post-destroy resource inventory — on success it confirms
+        // a clean teardown, on failure it tells the user exactly what to clean up.
+        if let Some(infra) = infra.as_deref() {
+            destroy_report(ctx, infra).await;
+        } else {
+            ctx.log("warning: could not read cluster infra ID (metadata.json) — skipping destroy report");
         }
+
+        outcome
+    }
+}
+
+/// Tear down the EFS filesystem (and its mount targets) the storage module
+/// created for this cluster. Best-effort: every failure logs a warning and
+/// continues so the cluster destroy still runs.
+async fn teardown_efs(ctx: &StepContext, infra: &str) {
+    let env = aws_env(ctx);
+    let token = format!("{infra}-efs");
+
+    // Locate the filesystem by its creation token.
+    let described = ctx
+        .run_with_env(
+            "aws",
+            &[
+                "efs".into(),
+                "describe-file-systems".into(),
+                "--creation-token".into(),
+                token.clone(),
+                "--output".into(),
+                "json".into(),
+            ],
+            &env,
+        )
+        .await;
+    let fs = match described {
+        Ok(o) if o.success() => parse_fs_id(&o.stdout),
+        Ok(o) => {
+            ctx.log(format!(
+                "warning: efs describe-file-systems failed (exit {}): {} — skipping EFS teardown",
+                o.status,
+                o.stderr.trim()
+            ));
+            return;
+        }
+        Err(e) => {
+            ctx.log(format!("warning: could not run aws efs describe-file-systems: {e} — skipping EFS teardown"));
+            return;
+        }
+    };
+    let Some(fs) = fs else {
+        ctx.log("no EFS filesystem tagged for this cluster — nothing to tear down");
+        return;
+    };
+    ctx.log(format!("tearing down EFS filesystem {fs} ({token})"));
+
+    // Delete every mount target (each holds an ENI in a cluster subnet).
+    let mt = ctx
+        .run_with_env(
+            "aws",
+            &["efs".into(), "describe-mount-targets".into(), "--file-system-id".into(), fs.clone(), "--output".into(), "json".into()],
+            &env,
+        )
+        .await;
+    let mount_targets = mt.ok().filter(|o| o.success()).map(|o| parse_mount_target_ids(&o.stdout)).unwrap_or_default();
+    for id in &mount_targets {
+        ctx.log(format!("deleting EFS mount target {id}"));
+        let _ = ctx
+            .run_with_env(
+                "aws",
+                &["efs".into(), "delete-mount-target".into(), "--mount-target-id".into(), id.clone()],
+                &env,
+            )
+            .await;
+    }
+
+    // Mount-target deletion is async; poll a bounded number of times until none
+    // remain. We can't sleep easily here, so just re-describe up to N times; if
+    // they're still detaching the delete-file-system below will fail and we log
+    // a warning (the report then flags the leftover EFS).
+    if !mount_targets.is_empty() {
+        for _ in 0..10 {
+            let still = ctx
+                .run_with_env(
+                    "aws",
+                    &["efs".into(), "describe-mount-targets".into(), "--file-system-id".into(), fs.clone(), "--output".into(), "json".into()],
+                    &env,
+                )
+                .await;
+            let remaining = still.ok().filter(|o| o.success()).map(|o| parse_mount_target_ids(&o.stdout)).unwrap_or_default();
+            if remaining.is_empty() {
+                break;
+            }
+        }
+    }
+
+    // Delete the filesystem. May fail if mount targets are still detaching — log
+    // and continue; the destroy report will flag it if it survives.
+    match ctx
+        .run_with_env(
+            "aws",
+            &["efs".into(), "delete-file-system".into(), "--file-system-id".into(), fs.clone()],
+            &env,
+        )
+        .await
+    {
+        Ok(o) if o.success() => ctx.log(format!("deleted EFS filesystem {fs}")),
+        Ok(o) => ctx.log(format!(
+            "warning: efs delete-file-system {fs} failed (exit {}): {} — it may still be detaching mount targets; verify in the AWS console",
+            o.status,
+            o.stderr.trim()
+        )),
+        Err(e) => ctx.log(format!("warning: could not run aws efs delete-file-system: {e}")),
+    }
+}
+
+/// Enumerate every AWS resource still tagged for this cluster and emit a report
+/// (live log + `destroy-report.txt` / `destroy-report.json` artifacts) so the
+/// user can manually clean up any leftovers and avoid recurring cost.
+async fn destroy_report(ctx: &StepContext, infra: &str) {
+    let env = aws_env(ctx);
+    let region = ctx.input("region").unwrap_or("us-east-1").to_string();
+    let tag_keys = [
+        format!("kubernetes.io/cluster/{infra}"),
+        format!("sigs.k8s.io/cluster-api-provider-aws/cluster/{infra}"),
+    ];
+
+    let mut remaining: Vec<RemainingResource> = Vec::new();
+    for key in &tag_keys {
+        let out = ctx
+            .run_with_env(
+                "aws",
+                &[
+                    "resourcegroupstaggingapi".into(),
+                    "get-resources".into(),
+                    "--region".into(),
+                    region.clone(),
+                    "--tag-filters".into(),
+                    format!("Key={key},Values=owned"),
+                    "--output".into(),
+                    "json".into(),
+                ],
+                &env,
+            )
+            .await;
+        let arns = match out {
+            Ok(o) if o.success() => parse_resource_arns(&o.stdout),
+            Ok(o) => {
+                ctx.log(format!(
+                    "warning: get-resources for {key} failed (exit {}): {}",
+                    o.status,
+                    o.stderr.trim()
+                ));
+                Vec::new()
+            }
+            Err(e) => {
+                ctx.log(format!("warning: could not run aws resourcegroupstaggingapi get-resources: {e}"));
+                Vec::new()
+            }
+        };
+        for arn in arns {
+            let (service, resource_type, id) = parse_arn(&arn);
+            let res = RemainingResource {
+                billable: is_billable(&resource_type),
+                service,
+                resource_type,
+                id,
+            };
+            if !remaining.contains(&res) {
+                remaining.push(res);
+            }
+        }
+    }
+
+    // Live log report.
+    ctx.log(format!("=== destroy report for {infra} ({region}) ==="));
+    if remaining.is_empty() {
+        ctx.log("all tagged resources deleted — no leftovers");
+    } else {
+        for r in &remaining {
+            let billable = if r.billable { " [BILLABLE]" } else { "" };
+            ctx.log(format!("REMAINING{billable} {}/{} {}", r.service, r.resource_type, r.id));
+        }
+        let billable_count = remaining.iter().filter(|r| r.billable).count();
+        ctx.log(format!(
+            "{} resource(s) still tagged (may be eventual-consistency lag) — {} billable; verify/clean up in the AWS console",
+            remaining.len(),
+            billable_count
+        ));
+    }
+
+    // Artifact files (human-readable + structured) for later tracking.
+    write_destroy_report_files(ctx, infra, &region, &remaining);
+}
+
+/// Write `destroy-report.txt` (human) and `destroy-report.json` (structured).
+fn write_destroy_report_files(
+    ctx: &StepContext,
+    infra: &str,
+    region: &str,
+    remaining: &[RemainingResource],
+) {
+    let mut txt = format!("=== destroy report for {infra} ({region}) ===\n");
+    if remaining.is_empty() {
+        txt.push_str("all tagged resources deleted — no leftovers\n");
+    } else {
+        for r in remaining {
+            let billable = if r.billable { " [BILLABLE]" } else { "" };
+            txt.push_str(&format!("REMAINING{billable} {}/{} {}\n", r.service, r.resource_type, r.id));
+        }
+        let billable_count = remaining.iter().filter(|r| r.billable).count();
+        txt.push_str(&format!(
+            "{} resource(s) still tagged (may be eventual-consistency lag) — {} billable; verify/clean up in the AWS console\n",
+            remaining.len(),
+            billable_count
+        ));
+    }
+    let txt_path = ctx.artifacts_dir().join("destroy-report.txt");
+    if let Err(e) = std::fs::write(&txt_path, &txt) {
+        ctx.log(format!("warning: could not write {}: {e}", txt_path.display()));
+    }
+
+    let resources: Vec<serde_json::Value> = remaining
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "service": r.service,
+                "resource_type": r.resource_type,
+                "id": r.id,
+                "billable": r.billable,
+            })
+        })
+        .collect();
+    let json = serde_json::json!({
+        "infra_id": infra,
+        "region": region,
+        "generated": false,
+        "remaining": resources,
+    });
+    let json_path = ctx.artifacts_dir().join("destroy-report.json");
+    if let Err(e) = std::fs::write(&json_path, serde_json::to_string_pretty(&json).unwrap_or_default()) {
+        ctx.log(format!("warning: could not write {}: {e}", json_path.display()));
     }
 }
 
@@ -1647,5 +2012,155 @@ mod tests {
     #[test]
     fn provisioner_id_is_aws() {
         assert_eq!(AwsProvisioner::new().id(), "aws");
+    }
+
+    #[test]
+    fn parse_arn_handles_both_shapes() {
+        // Slash form: arn:aws:ec2:<region>:<acct>:natgateway/<id>
+        let (s, t, id) = parse_arn("arn:aws:ec2:us-east-1:123456789012:natgateway/nat-0abc");
+        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("ec2", "natgateway", "nat-0abc"));
+
+        // Slash form: instance
+        let (s, t, id) = parse_arn("arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0");
+        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("ec2", "instance", "i-0123456789abcdef0"));
+
+        // Slash form: security-group
+        let (s, t, id) = parse_arn("arn:aws:ec2:us-east-1:123456789012:security-group/sg-0abc");
+        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("ec2", "security-group", "sg-0abc"));
+
+        // Colon form: elasticfilesystem:...:file-system:<id>
+        let (s, t, id) = parse_arn("arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-0abc");
+        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("elasticfilesystem", "file-system", "fs-0abc"));
+
+        // RDS uses the colon separator: arn:aws:rds:<region>:<acct>:db:<id>
+        let (s, t, id) = parse_arn("arn:aws:rds:us-east-1:123456789012:db:mydb");
+        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("rds", "db", "mydb"));
+
+        // No separator (e.g. S3 bucket) — whole resource is the id.
+        let (s, t, id) = parse_arn("arn:aws:s3:::my-bucket");
+        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("s3", "", "my-bucket"));
+    }
+
+    #[test]
+    fn billable_classifier_flags_cost_bearing_types() {
+        for t in ["instance", "natgateway", "elastic-ip", "eip", "address", "load-balancer", "elb", "elbv2", "volume", "file-system", "efs", "db", "rds", "fsx"] {
+            assert!(is_billable(t), "{t} should be billable");
+        }
+        for t in ["security-group", "subnet", "vpc", "route-table", "internet-gateway", ""] {
+            assert!(!is_billable(t), "{t} should NOT be billable");
+        }
+    }
+
+    #[test]
+    fn parses_resource_arns_from_tagging_api() {
+        let json = r#"{"ResourceTagMappingList":[
+            {"ResourceARN":"arn:aws:ec2:us-east-1:1:natgateway/nat-1"},
+            {"ResourceARN":"arn:aws:ec2:us-east-1:1:security-group/sg-1"}
+        ]}"#;
+        assert_eq!(
+            parse_resource_arns(json),
+            vec![
+                "arn:aws:ec2:us-east-1:1:natgateway/nat-1".to_string(),
+                "arn:aws:ec2:us-east-1:1:security-group/sg-1".to_string(),
+            ]
+        );
+    }
+
+    fn write_metadata(dir: &std::path::Path, infra: &str) {
+        let cluster = dir.join("cluster");
+        std::fs::create_dir_all(&cluster).unwrap();
+        std::fs::write(cluster.join("metadata.json"), format!("{{\"infraID\":\"{infra}\"}}")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn destroy_emits_report_flagging_billable_leftovers() {
+        let dir = temp_dir("destroy-report");
+        write_metadata(&dir, "cl-abc12");
+        // EFS teardown: no filesystem found (skip). Then openshift-install destroy
+        // succeeds. Then get-resources returns one natgateway + one security-group
+        // for the first tag key, none for the second.
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            MockResponse::ok("efs describe-file-systems", "{\"FileSystems\":[]}"),
+            MockResponse::ok("destroy cluster", "INFO destroy complete"),
+            MockResponse::ok(
+                "get-resources",
+                r#"{"ResourceTagMappingList":[
+                    {"ResourceARN":"arn:aws:ec2:us-east-1:1:natgateway/nat-1"},
+                    {"ResourceARN":"arn:aws:ec2:us-east-1:1:security-group/sg-1"}
+                ]}"#,
+            ),
+            // Second tag key — nothing.
+            MockResponse::ok("get-resources", r#"{"ResourceTagMappingList":[]}"#),
+        ]));
+        let ctx = ctx_with(runner.clone(), full_spec_inputs(), BTreeMap::new(), dir.clone());
+
+        assert_eq!(AwsProvisioner::new().destroy(&ctx).await, StepOutcome::Completed);
+
+        // The report artifact exists and flags the natgateway as billable.
+        let report = std::fs::read_to_string(dir.join("destroy-report.txt")).unwrap();
+        assert!(report.contains("REMAINING [BILLABLE] ec2/natgateway nat-1"), "report: {report}");
+        assert!(report.contains("REMAINING ec2/security-group sg-1"), "report: {report}");
+        assert!(report.contains("2 resource(s) still tagged"), "report: {report}");
+        assert!(report.contains("1 billable"), "report: {report}");
+
+        // The structured JSON report is also written.
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("destroy-report.json")).unwrap()).unwrap();
+        assert_eq!(json["infra_id"], "cl-abc12");
+        assert_eq!(json["remaining"].as_array().unwrap().len(), 2);
+
+        // EFS teardown ran before the cluster destroy.
+        let calls = runner.calls();
+        let efs_pos = calls.iter().position(|c| c.contains("efs describe-file-systems")).unwrap();
+        let destroy_pos = calls.iter().position(|c| c.contains("destroy cluster")).unwrap();
+        assert!(efs_pos < destroy_pos, "EFS teardown must precede cluster destroy: {calls:?}");
+    }
+
+    #[tokio::test]
+    async fn destroy_failure_still_emits_report() {
+        let dir = temp_dir("destroy-fail-report");
+        write_metadata(&dir, "cl-xyz99");
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            MockResponse::ok("efs describe-file-systems", "{\"FileSystems\":[]}"),
+            MockResponse::fail("destroy cluster", 1, "dependency violation"),
+            MockResponse::ok("get-resources", r#"{"ResourceTagMappingList":[]}"#),
+            MockResponse::ok("get-resources", r#"{"ResourceTagMappingList":[]}"#),
+        ]));
+        let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir.clone());
+        match AwsProvisioner::new().destroy(&ctx).await {
+            StepOutcome::Failed { error, .. } => assert!(error.contains("dependency violation"), "{error}"),
+            o => panic!("expected Failed, got {o:?}"),
+        }
+        // Report is still written even on destroy failure.
+        let report = std::fs::read_to_string(dir.join("destroy-report.txt")).unwrap();
+        assert!(report.contains("all tagged resources deleted"), "report: {report}");
+    }
+
+    #[tokio::test]
+    async fn destroy_tears_down_efs_with_mount_targets() {
+        let dir = temp_dir("destroy-efs");
+        write_metadata(&dir, "cl-efs01");
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            // describe-file-systems → one filesystem
+            MockResponse::ok("efs describe-file-systems", "{\"FileSystems\":[{\"FileSystemId\":\"fs-9\"}]}"),
+            // describe-mount-targets → one mount target
+            MockResponse::ok("efs describe-mount-targets", "{\"MountTargets\":[{\"MountTargetId\":\"fsmt-1\"}]}"),
+            // delete-mount-target
+            MockResponse::ok("efs delete-mount-target", "{}"),
+            // re-poll describe-mount-targets → now empty
+            MockResponse::ok("efs describe-mount-targets", "{\"MountTargets\":[]}"),
+            // delete-file-system
+            MockResponse::ok("efs delete-file-system", "{}"),
+            // cluster destroy
+            MockResponse::ok("destroy cluster", "INFO destroy complete"),
+            // report
+            MockResponse::ok("get-resources", r#"{"ResourceTagMappingList":[]}"#),
+            MockResponse::ok("get-resources", r#"{"ResourceTagMappingList":[]}"#),
+        ]));
+        let ctx = ctx_with(runner.clone(), full_spec_inputs(), BTreeMap::new(), dir);
+        assert_eq!(AwsProvisioner::new().destroy(&ctx).await, StepOutcome::Completed);
+        let calls = runner.calls();
+        assert!(calls.iter().any(|c| c.contains("efs delete-mount-target --mount-target-id fsmt-1")), "{calls:?}");
+        assert!(calls.iter().any(|c| c.contains("efs delete-file-system --file-system-id fs-9")), "{calls:?}");
     }
 }
