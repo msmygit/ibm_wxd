@@ -466,8 +466,28 @@ function collectCredentials() {
   return creds;
 }
 
+// Clear any prior/re-attached run from the view so a fresh start shows a clean
+// slate (no stale progress, log, or controls leaking from the previous run).
+function resetRunView() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  currentRunId = null;
+  $("#run-meta").textContent = "No run yet.";
+  clear($("#steps"));
+  $("#log").textContent = "";
+  $("#input-panel").hidden = true;
+  $("#status-banner").hidden = true;
+  for (const id of ["#pause-btn", "#resume-btn", "#retry-btn", "#destroy-btn"]) {
+    $(id).disabled = true;
+  }
+}
+
 $("#start-btn").addEventListener("click", async () => {
   try {
+    // Starting afresh: drop any previously-attached run from the view first.
+    resetRunView();
     const credentials = collectCredentials();
     // IBM entitlement key is required to install Software Hub / watsonx.data.
     if (!credentials.IBM_ENTITLEMENT_KEY) {
