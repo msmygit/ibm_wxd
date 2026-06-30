@@ -33,7 +33,7 @@ fn services_module() -> sw_mod_services::ComponentsModule {
 pub fn default_registry() -> ModuleRegistry {
     ModuleRegistry::new()
         .with(Box::new(sw_mod_prereqs::PrereqsModule))
-        .with(Box::new(sw_mod_provision::ProvisionModule))
+        .with(Box::new(sw_mod_provision::ProvisionModule::new()))
         .with(Box::new(sw_mod_softwarehub::SoftwareHubModule))
         .with(Box::new(services_module()))
 }

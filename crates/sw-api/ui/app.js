@@ -447,8 +447,9 @@ $("#start-btn").addEventListener("click", async () => {
         if (v) credentials[s.dataset.existingSecret] = v;
       }
     } else {
-      // Provision mode: validate required spec fields natively (highlights the
-      // offending field in red and shows a message), then collect.
+      // Provision mode: record the chosen cloud so the steps dispatch to the
+      // right provisioner, then validate required spec fields natively.
+      inputs.hyperscaler = selectedProvider();
       const pf = document.getElementById("provision-form");
       if (!pf.reportValidity()) {
         banner("fail", "Please complete the highlighted required cluster-spec field(s).");

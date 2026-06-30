@@ -224,20 +224,25 @@ async fn retry_run(State(state): State<AppState>, Path(id): Path<String>) -> Res
 /// Tear down the provisioned cluster (best-effort, runs `openshift-install
 /// destroy cluster`). Important for paid clouds so resources aren't orphaned.
 async fn destroy_run(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    use sw_mod_provision::{AwsProvisioner, Provisioner};
     let orch = state.orch.clone();
     tokio::spawn(async move {
+        // Pick the provisioner for the run's chosen cloud, with its non-secret
+        // inputs (so the AWS destroy gets region/etc.) and its secrets.
+        let run = orch.store().load(&id).ok();
+        let inputs = run.as_ref().map(|r| r.inputs.clone()).unwrap_or_default();
+        let secrets = orch.store().load_secrets(&id).unwrap_or_default();
+        let provider = inputs.get("hyperscaler").cloned().unwrap_or_else(|| "aws".to_string());
         let artifacts = orch.store().artifacts_dir(&id);
         let ctx = sw_core::StepContext::with_artifacts(
             id.clone(),
             "mod-provision/destroy".to_string(),
             orch.command_runner(),
             orch.bus().clone(),
-            BTreeMap::new(),
-            BTreeMap::new(),
+            inputs,
+            secrets,
             artifacts,
         );
-        let _ = AwsProvisioner::new().destroy(&ctx).await;
+        let _ = sw_mod_provision::ProvisionerRegistry::new().get(&provider).destroy(&ctx).await;
     });
     StatusCode::ACCEPTED.into_response()
 }
