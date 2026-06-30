@@ -231,13 +231,21 @@ impl Step for ApplyComponentsStep {
         let components = selected_components(ctx);
         let ns = operands_ns(ctx);
         let version = ctx.input("VERSION").unwrap_or("5.4.0").to_string();
-        ctx.log(format!("applying components [{components}] in {ns} (release {version})"));
+        // Software Hub services (watsonx.data et al.) need both a block (RWO) and
+        // a file (RWX) storage class. Defaults match a provisioned AWS cluster.
+        let block_sc = ctx.input("block_storage_class").unwrap_or("gp3-csi").to_string();
+        let file_sc = ctx.input("file_storage_class").unwrap_or("efs-sc").to_string();
+        ctx.log(format!(
+            "applying components [{components}] in {ns} (release {version}); block={block_sc}, file={file_sc}"
+        ));
         let args = vec![
             "manage".into(),
             "apply-cr".into(),
             format!("--components={components}"),
             format!("--cpd_instance_ns={ns}"),
             format!("--release={version}"),
+            format!("--block_storage_class={block_sc}"),
+            format!("--file_storage_class={file_sc}"),
         ];
         match ctx.run_in_cluster("cpd-cli", &args).await {
             Ok(o) if o.success() => {

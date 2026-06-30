@@ -21,6 +21,7 @@ sw-mod-provision = { path = "../sw-mod-provision" }
 sw-mod-existing = { path = "../sw-mod-existing" }
 sw-mod-softwarehub = { path = "../sw-mod-softwarehub" }
 sw-mod-services = { path = "../sw-mod-services" }
+sw-mod-storage = { path = "../sw-mod-storage" }
 wxd-svc-watsonxdata = { path = "../wxd-svc-watsonxdata" }
 tokio = { workspace = true }
 axum = { workspace = true }
