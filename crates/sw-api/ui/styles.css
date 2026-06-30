@@ -97,6 +97,20 @@ body {
 .mode-select legend { color: var(--muted); font-size: 13px; padding: 0 6px; }
 .mode-select label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 
+/* Resume a previous run */
+.resume-run {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px 12px;
+  margin: 0 0 14px;
+  display: grid;
+  gap: 6px;
+}
+.resume-run > label { color: var(--muted); font-size: 13px; }
+.resume-row { display: flex; gap: 8px; align-items: center; }
+.resume-row select { flex: 1; min-width: 0; }
+.muted.small { font-size: 12px; margin: 0; }
+
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
 
 button {
