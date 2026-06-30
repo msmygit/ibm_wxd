@@ -226,6 +226,12 @@ fn spec_fields() -> Vec<InputField> {
             default: None,
         },
         InputField {
+            key: "create_base_domain_zone".to_string(),
+            label: "Create the base-domain hosted zone if missing (auto-delegates for a subdomain of a zone you own)".to_string(),
+            secret: false,
+            default: Some("false".to_string()),
+        },
+        InputField {
             key: "control_plane_type".to_string(),
             label: "Control plane instance type".to_string(),
             secret: false,
@@ -405,6 +411,7 @@ impl Module for ProvisionModule {
         vec![
             Box::new(ClusterSpecStep),
             Box::new(PreflightAwsStep),
+            Box::new(EnsureBaseDomainStep),
             Box::new(WriteInstallConfigStep),
             Box::new(CreateClusterStep::new()),
         ]
@@ -561,57 +568,15 @@ impl Step for PreflightAwsStep {
             }
         }
 
-        // Validate the base domain is an existing *public* Route53 hosted zone —
-        // openshift-install needs one and otherwise fails ~30s in. Catching it
-        // here lists the user's actual zones so they can pick a valid one.
-        if let Some(base) = ctx.input("base_domain").filter(|d| !d.is_empty()) {
-            let base = base.trim_end_matches('.').to_string();
-            ctx.log(format!("preflight: Route53 public hosted zone for {base}"));
-            let args = vec!["route53".into(), "list-hosted-zones".into(), "--output".into(), "json".into()];
-            match runner.run_with_env("aws", &args, &env).await {
-                Ok(o) if o.success() => {
-                    let zones = parse_public_zones(&o.stdout);
-                    let want = format!("{base}.");
-                    if !zones.iter().any(|z| z == &want) {
-                        let available: Vec<String> =
-                            zones.iter().map(|z| z.trim_end_matches('.').to_string()).collect();
-                        let listing = if available.is_empty() {
-                            "(no public hosted zones found in this account)".to_string()
-                        } else {
-                            available.join(", ")
-                        };
-                        return StepOutcome::Failed {
-                            error: format!(
-                                "'{base}' is not a public Route53 hosted zone in this account"
-                            ),
-                            next_steps: vec![
-                                format!("Use one of your existing public hosted zones as the base domain: {listing}"),
-                                format!("…or create a public Route53 hosted zone for '{base}' and delegate the domain to its name servers, then retry."),
-                            ],
-                        };
-                    }
-                    ctx.log(format!("base domain '{base}' resolves to a public hosted zone"));
-                }
-                // Couldn't list zones (e.g. limited IAM) — warn, don't hard-block.
-                Ok(o) => ctx.log(format!(
-                    "warning: could not verify Route53 zones (exit {}): {}",
-                    o.status,
-                    o.stderr.trim()
-                )),
-                Err(e) => ctx.log(format!("warning: could not run aws route53: {e}")),
-            }
-        }
-
         ctx.log("preflight passed");
         ctx.progress(100);
         StepOutcome::Completed
     }
 }
 
-/// Extract the names of **public** hosted zones from `aws route53
-/// list-hosted-zones --output json` output (trailing-dot names, e.g.
-/// `example.com.`).
-fn parse_public_zones(json: &str) -> Vec<String> {
+/// Parse `aws route53 list-hosted-zones --output json` into the **public** zones
+/// as `(name, id)` pairs (name has a trailing dot, e.g. `example.com.`).
+fn parse_public_zones(json: &str) -> Vec<(String, String)> {
     serde_json::from_str::<serde_json::Value>(json)
         .ok()
         .and_then(|v| v.get("HostedZones").and_then(|h| h.as_array()).cloned())
@@ -623,10 +588,248 @@ fn parse_public_zones(json: &str) -> Vec<String> {
                         .and_then(|p| p.as_bool())
                         == Some(false)
                 })
-                .filter_map(|z| z.get("Name").and_then(|n| n.as_str()).map(String::from))
+                .filter_map(|z| {
+                    let name = z.get("Name").and_then(|n| n.as_str())?;
+                    let id = z.get("Id").and_then(|i| i.as_str()).unwrap_or("");
+                    Some((name.to_string(), id.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Name servers from `aws route53 create-hosted-zone --output json`.
+fn parse_delegation_ns(json: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| {
+            v.get("DelegationSet")
+                .and_then(|d| d.get("NameServers"))
+                .and_then(|n| n.as_array())
+                .cloned()
+        })
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// The longest public zone that is a strict parent of `base` (e.g. parent
+/// `ocpcpdtest.com.` for base `wxd.ocpcpdtest.com`), if any.
+fn find_parent_zone(zones: &[(String, String)], base: &str) -> Option<(String, String)> {
+    let base_dot = format!("{}.", base.trim_end_matches('.'));
+    zones
+        .iter()
+        .filter(|(n, _)| n != &base_dot && base_dot.ends_with(&format!(".{n}")))
+        .max_by_key(|(n, _)| n.len())
+        .cloned()
+}
+
+/// A Route53 change-batch (JSON) that UPSERTs an NS record delegating `base` to
+/// `ns` in the parent zone.
+fn ns_change_batch(base: &str, ns: &[String]) -> String {
+    let records: Vec<String> = ns.iter().map(|n| format!("{{\"Value\":\"{n}\"}}")).collect();
+    format!(
+        "{{\"Changes\":[{{\"Action\":\"UPSERT\",\"ResourceRecordSet\":\
+         {{\"Name\":\"{base}\",\"Type\":\"NS\",\"TTL\":300,\"ResourceRecords\":[{}]}}}}]}}",
+        records.join(",")
+    )
+}
+
+/// Step: ensure the base domain is a usable public Route53 hosted zone. If it
+/// already exists, pass. If not and the user opted in
+/// (`create_base_domain_zone=true`), create it — auto-delegating in the parent
+/// zone when `base` is a subdomain of one the account already hosts; for an
+/// apex/unowned domain, create it and surface the NS records for registrar
+/// delegation.
+struct EnsureBaseDomainStep;
+
+impl EnsureBaseDomainStep {
+    async fn create_zone(
+        &self,
+        ctx: &StepContext,
+        base: &str,
+        zones: &[(String, String)],
+        env: &[(String, String)],
+    ) -> StepOutcome {
+        ctx.log(format!("creating Route53 hosted zone for {base}"));
+        let caller_ref = format!("wxd-{}-{base}", ctx.run_id);
+        let create = ctx
+            .runner()
+            .run_with_env(
+                "aws",
+                &[
+                    "route53".into(),
+                    "create-hosted-zone".into(),
+                    "--name".into(),
+                    base.to_string(),
+                    "--caller-reference".into(),
+                    caller_ref,
+                    "--output".into(),
+                    "json".into(),
+                ],
+                env,
+            )
+            .await;
+        let out = match create {
+            Ok(o) if o.success() => o,
+            Ok(o) => {
+                return StepOutcome::Failed {
+                    error: format!("create-hosted-zone failed (exit {}): {}", o.status, o.stderr.trim()),
+                    next_steps: vec!["Check Route53 permissions (route53:CreateHostedZone), then retry.".into()],
+                }
+            }
+            Err(e) => {
+                return StepOutcome::Failed {
+                    error: format!("could not run aws route53 create-hosted-zone: {e}"),
+                    next_steps: vec!["Ensure the aws CLI is installed (Prerequisites), then retry.".into()],
+                }
+            }
+        };
+        let ns = parse_delegation_ns(&out.stdout);
+        if ns.is_empty() {
+            return StepOutcome::Failed {
+                error: "created the zone but could not read its name servers".to_string(),
+                next_steps: vec!["Inspect the new hosted zone in the Route53 console.".into()],
+            };
+        }
+
+        match find_parent_zone(zones, base) {
+            Some((parent_name, parent_id)) => {
+                ctx.log(format!("delegating {base} under parent zone {parent_name}"));
+                let batch = ns_change_batch(base, &ns);
+                let path = ctx.artifacts_dir().join("route53-delegation.json");
+                if let Err(e) = std::fs::write(&path, &batch) {
+                    return StepOutcome::Failed {
+                        error: format!("could not write delegation change-batch: {e}"),
+                        next_steps: vec!["Check filesystem permissions for the artifacts directory.".into()],
+                    };
+                }
+                let batch_arg = format!("file://{}", path.display());
+                match ctx
+                    .runner()
+                    .run_with_env(
+                        "aws",
+                        &[
+                            "route53".into(),
+                            "change-resource-record-sets".into(),
+                            "--hosted-zone-id".into(),
+                            parent_id,
+                            "--change-batch".into(),
+                            batch_arg,
+                            "--output".into(),
+                            "json".into(),
+                        ],
+                        env,
+                    )
+                    .await
+                {
+                    Ok(o) if o.success() => {
+                        ctx.log(format!("delegated {base} in {parent_name}; the zone is ready"));
+                        ctx.progress(100);
+                        StepOutcome::Completed
+                    }
+                    Ok(o) => StepOutcome::Failed {
+                        error: format!("NS delegation failed (exit {}): {}", o.status, o.stderr.trim()),
+                        next_steps: vec![
+                            format!(
+                                "Manually add an NS record for {base} in the {parent_name} zone with: {}",
+                                ns.join(", ")
+                            ),
+                            "Then retry.".into(),
+                        ],
+                    },
+                    Err(e) => StepOutcome::Failed {
+                        error: format!("could not run change-resource-record-sets: {e}"),
+                        next_steps: vec!["Retry once the aws CLI is available.".into()],
+                    },
+                }
+            }
+            None => StepOutcome::Failed {
+                error: format!(
+                    "created the hosted zone for '{base}', but it won't resolve until you delegate it at your domain registrar"
+                ),
+                next_steps: vec![
+                    format!(
+                        "At your domain registrar for '{base}', set these name server (NS) records: {}",
+                        ns.join(", ")
+                    ),
+                    "After the registrar delegation propagates, retry. (Tip: a subdomain of a domain you already host in Route53 delegates automatically.)".into(),
+                ],
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl Step for EnsureBaseDomainStep {
+    fn id(&self) -> &str {
+        "ensure-dns-zone"
+    }
+    fn title(&self) -> &str {
+        "Ensure base-domain DNS zone"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        let base = match ctx.input("base_domain").filter(|d| !d.is_empty()) {
+            Some(d) => d.trim_end_matches('.').to_string(),
+            None => {
+                return StepOutcome::Failed {
+                    error: "base_domain is required".to_string(),
+                    next_steps: vec!["Re-run the cluster-spec step and supply a base domain.".into()],
+                }
+            }
+        };
+        let env = aws_env(ctx);
+        ctx.log(format!("checking Route53 for a public hosted zone matching {base}"));
+        let listing = ctx
+            .runner()
+            .run_with_env(
+                "aws",
+                &["route53".into(), "list-hosted-zones".into(), "--output".into(), "json".into()],
+                &env,
+            )
+            .await;
+        let zones = match listing {
+            Ok(o) if o.success() => parse_public_zones(&o.stdout),
+            // Couldn't list (e.g. limited IAM) — don't hard-block; let
+            // openshift-install be the source of truth.
+            Ok(o) => {
+                ctx.log(format!(
+                    "warning: could not list Route53 zones (exit {}): {} — skipping DNS check",
+                    o.status,
+                    o.stderr.trim()
+                ));
+                return StepOutcome::Completed;
+            }
+            Err(e) => {
+                ctx.log(format!("warning: could not run aws route53: {e} — skipping DNS check"));
+                return StepOutcome::Completed;
+            }
+        };
+
+        let want = format!("{base}.");
+        if zones.iter().any(|(n, _)| n == &want) {
+            ctx.log(format!("base domain '{base}' is an existing public hosted zone"));
+            ctx.progress(100);
+            return StepOutcome::Completed;
+        }
+
+        let opt_in = matches!(ctx.input("create_base_domain_zone"), Some(v) if v.eq_ignore_ascii_case("true"));
+        if !opt_in {
+            let listing = if zones.is_empty() {
+                "(no public hosted zones found in this account)".to_string()
+            } else {
+                zones.iter().map(|(n, _)| n.trim_end_matches('.').to_string()).collect::<Vec<_>>().join(", ")
+            };
+            return StepOutcome::Failed {
+                error: format!("'{base}' is not a public Route53 hosted zone in this account"),
+                next_steps: vec![
+                    format!("Use one of your existing public hosted zones as the base domain: {listing}"),
+                    "…or enable \"Create the base-domain hosted zone if missing\" in the cluster spec and retry.".into(),
+                ],
+            };
+        }
+
+        self.create_zone(ctx, &base, &zones, &env).await
+    }
 }
 
 /// Step 3: render and write `install-config.yaml` into the cluster dir.
@@ -844,7 +1047,7 @@ mod tests {
         let outcome = ClusterSpecStep.run(&ctx).await;
         match outcome {
             StepOutcome::NeedsInput { fields, .. } => {
-                assert_eq!(fields.len(), 8, "should request all spec fields");
+                assert_eq!(fields.len(), 9, "should request all spec fields");
                 let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
                 assert!(keys.contains(&"cluster_name"));
                 assert!(keys.contains(&"region"));
@@ -920,34 +1123,106 @@ mod tests {
     #[test]
     fn parse_public_zones_filters_private() {
         let json = r#"{"HostedZones":[
-            {"Name":"ocpcpdtest.com.","Config":{"PrivateZone":false}},
-            {"Name":"internal.example.","Config":{"PrivateZone":true}},
-            {"Name":"ibm-cpd-partnerships.com.","Config":{"PrivateZone":false}}
+            {"Name":"ocpcpdtest.com.","Id":"/hostedzone/Z1","Config":{"PrivateZone":false}},
+            {"Name":"internal.example.","Id":"/hostedzone/Z2","Config":{"PrivateZone":true}},
+            {"Name":"ibm-cpd-partnerships.com.","Id":"/hostedzone/Z3","Config":{"PrivateZone":false}}
         ]}"#;
         let zones = parse_public_zones(json);
-        assert_eq!(zones, vec!["ocpcpdtest.com.".to_string(), "ibm-cpd-partnerships.com.".to_string()]);
+        assert_eq!(
+            zones,
+            vec![
+                ("ocpcpdtest.com.".to_string(), "/hostedzone/Z1".to_string()),
+                ("ibm-cpd-partnerships.com.".to_string(), "/hostedzone/Z3".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn find_parent_zone_picks_longest_match() {
+        let zones = vec![
+            ("ocpcpdtest.com.".to_string(), "/hostedzone/Z1".to_string()),
+            ("example.com.".to_string(), "/hostedzone/Z2".to_string()),
+        ];
+        let p = find_parent_zone(&zones, "wxd.ocpcpdtest.com").unwrap();
+        assert_eq!(p.0, "ocpcpdtest.com.");
+        // exact match is not a "parent"
+        assert!(find_parent_zone(&zones, "example.com").is_none());
+        // unrelated apex has no parent
+        assert!(find_parent_zone(&zones, "swwxdinstallpractice.com").is_none());
+    }
+
+    #[test]
+    fn parse_delegation_ns_reads_name_servers() {
+        let json = r#"{"DelegationSet":{"NameServers":["ns-1.awsdns-01.com","ns-2.awsdns-02.net"]}}"#;
+        assert_eq!(parse_delegation_ns(json), vec!["ns-1.awsdns-01.com", "ns-2.awsdns-02.net"]);
+    }
+
+    fn r53_list(zones_json: &str) -> MockResponse {
+        MockResponse::ok("route53 list-hosted-zones", zones_json)
     }
 
     #[tokio::test]
-    async fn preflight_fails_when_base_domain_not_a_public_zone() {
-        let dir = temp_dir("preflight-zone");
-        let runner = Arc::new(MockCommandRunner::new(vec![
-            MockResponse::ok("openshift-install version", "4.22"),
-            MockResponse::ok("aws --version", "aws-cli/2"),
-            MockResponse::ok("sts get-caller-identity", "{}"),
-            MockResponse::ok(
-                "route53 list-hosted-zones",
-                r#"{"HostedZones":[{"Name":"ocpcpdtest.com.","Config":{"PrivateZone":false}}]}"#,
-            ),
-        ]));
-        // full_spec_inputs uses base_domain=example.com, which isn't in the list.
+    async fn ensure_dns_passes_when_zone_exists() {
+        let dir = temp_dir("dns-exists");
+        let runner = Arc::new(MockCommandRunner::new(vec![r53_list(
+            r#"{"HostedZones":[{"Name":"example.com.","Id":"/hostedzone/Z1","Config":{"PrivateZone":false}}]}"#,
+        )]));
         let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir);
-        match PreflightAwsStep.run(&ctx).await {
-            StepOutcome::Failed { error, next_steps } => {
-                assert!(error.contains("public Route53 hosted zone"), "{error}");
+        assert_eq!(EnsureBaseDomainStep.run(&ctx).await, StepOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn ensure_dns_fails_without_optin() {
+        let dir = temp_dir("dns-no-optin");
+        let runner = Arc::new(MockCommandRunner::new(vec![r53_list(
+            r#"{"HostedZones":[{"Name":"ocpcpdtest.com.","Id":"/hostedzone/Z1","Config":{"PrivateZone":false}}]}"#,
+        )]));
+        // base_domain=example.com not present, opt-in not set.
+        let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir);
+        match EnsureBaseDomainStep.run(&ctx).await {
+            StepOutcome::Failed { next_steps, .. } => {
                 assert!(next_steps.iter().any(|s| s.contains("ocpcpdtest.com")));
+                assert!(next_steps.iter().any(|s| s.contains("Create the base-domain")));
             }
-            o => panic!("expected Failed for bad base domain, got {o:?}"),
+            o => panic!("expected Failed, got {o:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ensure_dns_creates_and_delegates_subdomain() {
+        let dir = temp_dir("dns-create");
+        let mut inputs = full_spec_inputs();
+        inputs.insert("base_domain".into(), "wxd.ocpcpdtest.com".into());
+        inputs.insert("create_base_domain_zone".into(), "true".into());
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            r53_list(r#"{"HostedZones":[{"Name":"ocpcpdtest.com.","Id":"/hostedzone/ZPARENT","Config":{"PrivateZone":false}}]}"#),
+            MockResponse::ok("create-hosted-zone", r#"{"DelegationSet":{"NameServers":["ns-1.awsdns-01.com","ns-2.awsdns-02.net"]}}"#),
+            MockResponse::ok("change-resource-record-sets", "{}"),
+        ]));
+        let ctx = ctx_with(runner.clone(), inputs, BTreeMap::new(), dir);
+        assert_eq!(EnsureBaseDomainStep.run(&ctx).await, StepOutcome::Completed);
+        let calls = runner.calls();
+        assert!(calls.iter().any(|c| c.contains("create-hosted-zone")), "{calls:?}");
+        assert!(calls.iter().any(|c| c.contains("change-resource-record-sets")), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn ensure_dns_apex_without_parent_asks_for_registrar_delegation() {
+        let dir = temp_dir("dns-apex");
+        let mut inputs = full_spec_inputs();
+        inputs.insert("base_domain".into(), "swwxdinstallpractice.com".into());
+        inputs.insert("create_base_domain_zone".into(), "true".into());
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            r53_list(r#"{"HostedZones":[{"Name":"ocpcpdtest.com.","Id":"/hostedzone/Z1","Config":{"PrivateZone":false}}]}"#),
+            MockResponse::ok("create-hosted-zone", r#"{"DelegationSet":{"NameServers":["ns-9.awsdns-09.org"]}}"#),
+        ]));
+        let ctx = ctx_with(runner, inputs, BTreeMap::new(), dir);
+        match EnsureBaseDomainStep.run(&ctx).await {
+            StepOutcome::Failed { next_steps, .. } => {
+                assert!(next_steps.iter().any(|s| s.contains("registrar")));
+                assert!(next_steps.iter().any(|s| s.contains("ns-9.awsdns-09.org")));
+            }
+            o => panic!("expected Failed asking for registrar delegation, got {o:?}"),
         }
     }
 
@@ -1085,6 +1360,7 @@ mod tests {
             vec![
                 "cluster-spec",
                 "preflight-aws",
+                "ensure-dns-zone",
                 "write-install-config",
                 "create-cluster"
             ]
