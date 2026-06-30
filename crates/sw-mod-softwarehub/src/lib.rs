@@ -74,6 +74,69 @@ impl Step for PreflightHub {
     }
 }
 
+/// Add the IBM entitled registry (`cp.icr.io`) credential to the cluster's
+/// global pull secret so OLM/operator images can be pulled. Without this,
+/// `apply-olm` pulls fail. `cpd-cli ... add-icr-cred-to-global-pull-secret` is
+/// itself idempotent (re-applying the same cred is a no-op that won't roll
+/// nodes), so this step can run on every attempt.
+struct AddEntitlement;
+
+#[async_trait]
+impl Step for AddEntitlement {
+    fn id(&self) -> &str {
+        "entitle-registry"
+    }
+    fn title(&self) -> &str {
+        "Add IBM entitled registry to pull secret"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        let key = match ctx.secret("IBM_ENTITLEMENT_KEY") {
+            Some(k) if !k.is_empty() => k.to_string(),
+            _ => {
+                return StepOutcome::NeedsInput {
+                    prompt: "Provide your IBM entitlement key (My IBM → Container software library) \
+                             so the cluster can pull IBM images from cp.icr.io."
+                        .into(),
+                    fields: vec![InputField {
+                        key: "IBM_ENTITLEMENT_KEY".into(),
+                        label: "IBM entitlement key".into(),
+                        secret: true,
+                        default: None,
+                    }],
+                };
+            }
+        };
+        ctx.log("adding IBM entitled registry (cp.icr.io) to the cluster global pull secret");
+        let args = vec![
+            "manage".into(),
+            "add-icr-cred-to-global-pull-secret".into(),
+            format!("--entitled-registry-key={key}"),
+        ];
+        match ctx.run_in_cluster("cpd-cli", &args).await {
+            Ok(o) if o.success() => {
+                ctx.log("entitled registry credential applied (nodes roll to pick it up if it changed)");
+                ctx.progress(100);
+                StepOutcome::Completed
+            }
+            Ok(o) => StepOutcome::Failed {
+                error: format!(
+                    "add-icr-cred-to-global-pull-secret failed (exit {}): {}",
+                    o.status,
+                    o.stderr.trim()
+                ),
+                next_steps: vec![
+                    "Verify the IBM entitlement key is valid (My IBM → Container software library).".into(),
+                    "Ensure a container runtime is running and `oc` has an active cluster session, then retry.".into(),
+                ],
+            },
+            Err(e) => StepOutcome::Failed {
+                error: format!("could not run cpd-cli: {e}"),
+                next_steps: vec!["Ensure `cpd-cli` is installed and on PATH, then retry.".into()],
+            },
+        }
+    }
+}
+
 /// Install the operators (apply-olm). Idempotent: if operators already report
 /// success, skip.
 struct InstallOperators;
@@ -248,6 +311,7 @@ impl Module for SoftwareHubModule {
     fn steps(&self) -> Vec<Box<dyn Step>> {
         vec![
             Box::new(PreflightHub),
+            Box::new(AddEntitlement),
             Box::new(InstallOperators),
             Box::new(InstallControlPlane),
             Box::new(WaitReady),
@@ -283,12 +347,39 @@ mod tests {
     }
 
     #[test]
-    fn module_exposes_four_steps_in_order() {
+    fn module_exposes_steps_in_order() {
         let ids: Vec<_> = SoftwareHubModule.steps().iter().map(|s| s.id().to_string()).collect();
         assert_eq!(
             ids,
-            vec!["preflight-hub", "install-operators", "install-control-plane", "wait-ready"]
+            vec![
+                "preflight-hub",
+                "entitle-registry",
+                "install-operators",
+                "install-control-plane",
+                "wait-ready"
+            ]
         );
+    }
+
+    #[tokio::test]
+    async fn entitle_registry_applies_icr_cred() {
+        let runner = MockCommandRunner::new(vec![MockResponse::ok(
+            "add-icr-cred-to-global-pull-secret",
+            "updated",
+        )]);
+        let ctx = ctx_with(runner, &[], &[("IBM_ENTITLEMENT_KEY", "k")]);
+        assert_eq!(AddEntitlement.run(&ctx).await, StepOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn entitle_registry_needs_key_when_absent() {
+        let ctx = ctx_with(MockCommandRunner::new(vec![]), &[], &[]);
+        match AddEntitlement.run(&ctx).await {
+            StepOutcome::NeedsInput { fields, .. } => {
+                assert_eq!(fields[0].key, "IBM_ENTITLEMENT_KEY");
+            }
+            o => panic!("expected NeedsInput, got {o:?}"),
+        }
     }
 
     #[tokio::test]
