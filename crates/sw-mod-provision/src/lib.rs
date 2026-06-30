@@ -14,7 +14,7 @@
 
 use async_trait::async_trait;
 use sw_core::{
-    CommandRunner, InputField, Module, Step, StepContext, StepOutcome,
+    InputField, Module, Step, StepContext, StepOutcome,
 };
 
 /// The cloud-agnostic provisioning seam.
@@ -209,7 +209,7 @@ impl Provisioner for AwsProvisioner {
             dir_str,
         ];
 
-        match ctx.runner().run_with_env("openshift-install", &args, &aws_env(ctx)).await {
+        match ctx.run_with_env("openshift-install", &args, &aws_env(ctx)).await {
             Ok(out) if out.success() => {
                 ctx.log("cluster provisioned");
                 publish_kubeconfig(ctx);
@@ -255,7 +255,7 @@ impl Provisioner for AwsProvisioner {
             "--dir".to_string(),
             dir_str,
         ];
-        match ctx.runner().run_with_env("openshift-install", &args, &aws_env(ctx)).await {
+        match ctx.run_with_env("openshift-install", &args, &aws_env(ctx)).await {
             Ok(out) if out.success() => StepOutcome::Completed,
             Ok(out) => StepOutcome::Failed {
                 error: format!(
@@ -688,15 +688,16 @@ fn is_valid_cluster_name(name: &str) -> bool {
     all_valid && alnum(name.chars().next()) && alnum(name.chars().last())
 }
 
-/// Run one preflight check, returning an error string on failure.
+/// Run one preflight check, returning an error string on failure. Logs the
+/// command line through `ctx` so the live log shows exactly what ran.
 async fn preflight_check(
-    runner: &dyn CommandRunner,
+    ctx: &StepContext,
     program: &str,
     args: &[String],
     env: &[(String, String)],
     what: &str,
 ) -> Result<(), String> {
-    match runner.run_with_env(program, args, env).await {
+    match ctx.run_with_env(program, args, env).await {
         Ok(out) if out.success() => Ok(()),
         Ok(out) => Err(format!("{what} failed (exit {}): {}", out.status, out.stderr.trim())),
         Err(e) => Err(format!("{what}: could not run `{program}`: {e}")),
@@ -720,7 +721,6 @@ fn aws_env(ctx: &StepContext) -> Vec<(String, String)> {
 
 /// AWS preflight: verify `openshift-install` + `aws` CLI + credentials.
 async fn aws_preflight(ctx: &StepContext) -> StepOutcome {
-    let runner = ctx.runner();
     let env = aws_env(ctx);
     let checks = [
         ("openshift-install", vec!["version".to_string()], "openshift-install availability"),
@@ -733,7 +733,7 @@ async fn aws_preflight(ctx: &StepContext) -> StepOutcome {
     ];
     for (program, args, what) in checks {
         ctx.log(format!("preflight: {what}"));
-        if let Err(error) = preflight_check(runner, program, &args, &env, what).await {
+        if let Err(error) = preflight_check(ctx, program, &args, &env, what).await {
             return StepOutcome::Failed {
                 error,
                 next_steps: vec![
@@ -824,9 +824,7 @@ async fn aws_create_zone(
 ) -> StepOutcome {
         ctx.log(format!("creating Route53 hosted zone for {base}"));
         let caller_ref = format!("wxd-{}-{base}", ctx.run_id);
-        let create = ctx
-            .runner()
-            .run_with_env(
+        let create = ctx.run_with_env(
                 "aws",
                 &[
                     "route53".into(),
@@ -876,9 +874,7 @@ async fn aws_create_zone(
                     };
                 }
                 let batch_arg = format!("file://{}", path.display());
-                match ctx
-                    .runner()
-                    .run_with_env(
+                match ctx.run_with_env(
                         "aws",
                         &[
                             "route53".into(),
@@ -944,9 +940,7 @@ async fn aws_ensure_dns(ctx: &StepContext) -> StepOutcome {
         };
         let env = aws_env(ctx);
         ctx.log(format!("checking Route53 for a public hosted zone matching {base}"));
-        let listing = ctx
-            .runner()
-            .run_with_env(
+        let listing = ctx.run_with_env(
                 "aws",
                 &["route53".into(), "list-hosted-zones".into(), "--output".into(), "json".into()],
                 &env,
@@ -1094,7 +1088,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::sync::Arc;
-    use sw_core::{EventBus, MockCommandRunner, MockResponse};
+    use sw_core::{CommandRunner, EventBus, MockCommandRunner, MockResponse};
 
     /// Build a StepContext with the given inputs/secrets and a temp artifacts dir.
     fn ctx_with(
