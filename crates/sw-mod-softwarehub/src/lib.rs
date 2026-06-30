@@ -31,7 +31,7 @@ impl Step for PreflightHub {
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         for (tool, arg) in [("cpd-cli", "version"), ("oc", "version")] {
             ctx.log(format!("checking `{tool}`"));
-            match ctx.runner().run(tool, &[arg.to_string()]).await {
+            match ctx.run(tool, &[arg.to_string()]).await {
                 Ok(o) if o.success() => {}
                 _ => {
                     return StepOutcome::Failed {

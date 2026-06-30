@@ -57,9 +57,48 @@ impl StepContext {
         }
     }
 
-    /// The shared command runner — the only way a step touches the OS.
+    /// The shared command runner — the only way a step touches the OS. Prefer the
+    /// logging wrappers [`run`](Self::run) / [`run_with_env`](Self::run_with_env)
+    /// so the exact command shows up in the live log.
     pub fn runner(&self) -> &dyn CommandRunner {
         self.runner.as_ref()
+    }
+
+    /// Render a command as a `program arg1 arg2` line for the live log, masking
+    /// any known secret values (tokens, passwords) that appear in the arguments.
+    fn cmdline(&self, program: &str, args: &[String]) -> String {
+        let mut line = if args.is_empty() {
+            program.to_string()
+        } else {
+            format!("{} {}", program, args.join(" "))
+        };
+        for v in self.secrets.values() {
+            // Only mask non-trivial values to avoid redacting an empty/short
+            // secret that would otherwise blanket the whole line.
+            if v.len() >= 4 && line.contains(v.as_str()) {
+                line = line.replace(v.as_str(), "***");
+            }
+        }
+        line
+    }
+
+    /// Run an external command, first echoing the exact (secret-redacted) command
+    /// line to this step's live log (`$ program args`). Prefer this over
+    /// `ctx.runner().run(...)` so the UI shows what is actually executing.
+    pub async fn run(&self, program: &str, args: &[String]) -> std::io::Result<CommandOutput> {
+        self.run_with_env(program, args, &[]).await
+    }
+
+    /// Like [`run`](Self::run) but with extra environment variables, and still
+    /// logs the command line first. Env values are never logged.
+    pub async fn run_with_env(
+        &self,
+        program: &str,
+        args: &[String],
+        env: &[(String, String)],
+    ) -> std::io::Result<CommandOutput> {
+        self.log(format!("$ {}", self.cmdline(program, args)));
+        self.runner.run_with_env(program, args, env).await
     }
 
     /// Directory for this run's artifacts. Steps write kubeconfig,
@@ -85,8 +124,7 @@ impl StepContext {
         args: &[String],
     ) -> std::io::Result<CommandOutput> {
         let kc = self.kubeconfig_path().to_string_lossy().into_owned();
-        self.runner
-            .run_with_env(program, args, &[("KUBECONFIG".to_string(), kc)])
+        self.run_with_env(program, args, &[("KUBECONFIG".to_string(), kc)])
             .await
     }
 
@@ -220,6 +258,33 @@ mod tests {
         ) -> std::io::Result<crate::command::CommandOutput> {
             *self.last_env.lock().unwrap() = env.to_vec();
             self.run(_p, _a).await
+        }
+    }
+
+    #[tokio::test]
+    async fn run_echoes_command_to_log_and_redacts_secrets() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let mut secrets = BTreeMap::new();
+        secrets.insert("OCP_TOKEN".to_string(), "sha256~supersecrettoken".to_string());
+        let ctx = StepContext::new(
+            "r".into(),
+            "m/login".into(),
+            Arc::new(MockCommandRunner::new(vec![])),
+            bus,
+            BTreeMap::new(),
+            secrets,
+        );
+        ctx.run("oc", &["login".into(), "--token=sha256~supersecrettoken".into()])
+            .await
+            .unwrap();
+        // First event is the echoed command line, with the secret masked.
+        match rx.recv().await.unwrap() {
+            Event::Log { line, .. } => {
+                assert_eq!(line, "$ oc login --token=***");
+                assert!(!line.contains("supersecrettoken"));
+            }
+            other => panic!("expected a Log event, got {other:?}"),
         }
     }
 
