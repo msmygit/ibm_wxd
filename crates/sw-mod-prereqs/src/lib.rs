@@ -146,6 +146,26 @@ fn specs() -> Vec<ToolSpec> {
             install: None, // installing AWS CLI needs admin rights; check-only.
             manual: vec!["Install the AWS CLI v2 from aws.amazon.com/cli (needs admin rights).".into()],
         },
+        ToolSpec {
+            id: "container-runtime",
+            title: "Container runtime (Docker/Podman)",
+            // `docker info` (or `podman info`) only succeeds when the daemon is
+            // actually RUNNING — `--version` would pass even with the daemon down.
+            // `cpd-cli manage` runs the olm-utils image locally, so this must be up
+            // before the Software Hub phase.
+            probe: (
+                "sh",
+                vec![
+                    "-c".into(),
+                    "docker info >/dev/null 2>&1 || podman info >/dev/null 2>&1".into(),
+                ],
+            ),
+            install: None, // a daemon can't be auto-installed/started; guide the user.
+            manual: vec![
+                "cpd-cli needs a local container engine to run olm-utils during the Software Hub install.".into(),
+                "Install Docker Desktop (or Colima/Podman) and START it, then Re-check. Verify with `docker info`.".into(),
+            ],
+        },
     ]
 }
 
@@ -319,7 +339,7 @@ mod tests {
     #[test]
     fn module_lists_all_tools() {
         let ids: Vec<_> = PrereqsModule.steps().iter().map(|s| s.id().to_string()).collect();
-        assert_eq!(ids, vec!["oc", "helm", "openshift-install", "cpd-cli", "aws"]);
+        assert_eq!(ids, vec!["oc", "helm", "openshift-install", "cpd-cli", "aws", "container-runtime"]);
     }
 
     #[test]
@@ -386,7 +406,7 @@ mod tests {
         let runner = MockCommandRunner::new(vec![]);
         let statuses = check_all(&runner).await;
         let ids: Vec<_> = statuses.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, vec!["oc", "helm", "openshift-install", "cpd-cli", "aws"]);
+        assert_eq!(ids, vec!["oc", "helm", "openshift-install", "cpd-cli", "aws", "container-runtime"]);
         assert!(statuses.iter().all(|s| s.present));
         // aws is the only check-only (non-installable) tool.
         assert!(!statuses.iter().find(|s| s.id == "aws").unwrap().installable);
