@@ -26,10 +26,9 @@ pub struct Service {
 /// UI renders the spec form from this, so adding a cloud is server-side only.
 /// Empty for clouds without a working provisioner yet.
 pub fn provider_spec(provider: &str) -> Vec<sw_core::InputField> {
-    match provider {
-        "aws" => sw_mod_provision::aws_spec_fields(),
-        _ => Vec::new(),
-    }
+    // Sourced from the provisioner registry: AWS today, empty (= "coming soon")
+    // for clouds without a `Provisioner` impl yet.
+    sw_mod_provision::ProvisionerRegistry::new().spec_fields(provider)
 }
 
 /// The hyperscaler catalog. AWS is enabled in v1; the rest are stubbed behind

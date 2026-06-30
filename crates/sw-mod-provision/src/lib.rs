@@ -25,8 +25,34 @@ use sw_core::{
 /// never call `std::process` directly.
 #[async_trait]
 pub trait Provisioner: Send + Sync {
-    /// Stable identifier for this provisioner (e.g. `"aws"`).
+    /// Stable identifier for this provisioner (e.g. `"aws"`). Matches the
+    /// hyperscaler id chosen in the UI.
     fn id(&self) -> &str;
+
+    /// Human-readable name shown in the UI (e.g. "Amazon Web Services").
+    fn display_name(&self) -> &str {
+        self.id()
+    }
+
+    /// The cluster-spec fields this cloud needs (region/zone, machine/VM types,
+    /// node counts, base domain, tags, …). The UI renders the spec form from
+    /// these, so a new cloud declares its own without any UI change.
+    fn spec_fields(&self) -> Vec<InputField>;
+
+    /// Input keys that must be present (non-empty) before provisioning proceeds.
+    fn required_inputs(&self) -> Vec<&'static str>;
+
+    /// Verify the CLIs and credentials this cloud needs (e.g. AWS: openshift-install
+    /// + aws + `aws sts get-caller-identity`; GCP would check gcloud, etc.).
+    async fn preflight(&self, ctx: &StepContext) -> StepOutcome;
+
+    /// Ensure the cluster's base DNS zone exists (validate / create / delegate).
+    /// Each cloud uses its own DNS service (Route53 / Cloud DNS / Azure DNS).
+    async fn ensure_dns(&self, ctx: &StepContext) -> StepOutcome;
+
+    /// Render and write this cloud's cluster install config. Returns the path on
+    /// success, or a `StepOutcome` (NeedsInput / Failed) to surface to the user.
+    fn write_install_config(&self, ctx: &StepContext) -> Result<std::path::PathBuf, StepOutcome>;
 
     /// Create the cluster. Must be idempotent: if the cluster already exists
     /// (detected via on-disk auth artifacts), it should succeed without
@@ -39,6 +65,56 @@ pub trait Provisioner: Send + Sync {
 
     /// Destroy the cluster and its cloud resources.
     async fn destroy(&self, ctx: &StepContext) -> StepOutcome;
+}
+
+/// The selected provisioner for a run, from the `hyperscaler` input (default AWS).
+fn provider_id(ctx: &StepContext) -> String {
+    ctx.input("hyperscaler").unwrap_or("aws").to_string()
+}
+
+/// Registry of cloud provisioners, keyed by id. New clouds register here; the
+/// generic provision steps dispatch to the one matching the run's `hyperscaler`.
+#[derive(Clone)]
+pub struct ProvisionerRegistry {
+    by_id: std::collections::BTreeMap<String, std::sync::Arc<dyn Provisioner>>,
+    default: String,
+}
+
+impl Default for ProvisionerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProvisionerRegistry {
+    /// A registry with the built-in providers (AWS today).
+    pub fn new() -> Self {
+        let mut by_id: std::collections::BTreeMap<String, std::sync::Arc<dyn Provisioner>> =
+            std::collections::BTreeMap::new();
+        by_id.insert("aws".to_string(), std::sync::Arc::new(AwsProvisioner::new()));
+        Self { by_id, default: "aws".to_string() }
+    }
+
+    /// Register (or replace) a provisioner. Returns self for chaining.
+    pub fn with(mut self, p: std::sync::Arc<dyn Provisioner>) -> Self {
+        self.by_id.insert(p.id().to_string(), p);
+        self
+    }
+
+    /// The provisioner for `id`, falling back to the default for execution.
+    pub fn get(&self, id: &str) -> std::sync::Arc<dyn Provisioner> {
+        self.by_id
+            .get(id)
+            .or_else(|| self.by_id.get(&self.default))
+            .expect("default provisioner must exist")
+            .clone()
+    }
+
+    /// Spec fields for a provider, or empty if it isn't implemented yet
+    /// (so the UI shows "coming soon" rather than borrowing AWS's fields).
+    pub fn spec_fields(&self, id: &str) -> Vec<InputField> {
+        self.by_id.get(id).map(|p| p.spec_fields()).unwrap_or_default()
+    }
 }
 
 /// The directory `openshift-install` operates on, under the run's artifacts.
@@ -85,6 +161,30 @@ impl AwsProvisioner {
 impl Provisioner for AwsProvisioner {
     fn id(&self) -> &str {
         "aws"
+    }
+
+    fn display_name(&self) -> &str {
+        "Amazon Web Services"
+    }
+
+    fn spec_fields(&self) -> Vec<InputField> {
+        aws_spec_fields()
+    }
+
+    fn required_inputs(&self) -> Vec<&'static str> {
+        REQUIRED_INPUTS.to_vec()
+    }
+
+    async fn preflight(&self, ctx: &StepContext) -> StepOutcome {
+        aws_preflight(ctx).await
+    }
+
+    async fn ensure_dns(&self, ctx: &StepContext) -> StepOutcome {
+        aws_ensure_dns(ctx).await
+    }
+
+    fn write_install_config(&self, ctx: &StepContext) -> Result<std::path::PathBuf, StepOutcome> {
+        write_install_config(ctx)
     }
 
     async fn create(&self, ctx: &StepContext) -> StepOutcome {
@@ -387,14 +487,29 @@ fn build_user_tags(cluster_name: &str, resource_tags: &str) -> Vec<(String, Stri
     tags
 }
 
-/// The provisioning module: contributes the ordered steps that take a run from
-/// "no cluster" to "OpenShift cluster ready".
-#[derive(Debug, Default, Clone)]
-pub struct ProvisionModule;
+/// The provisioning module: provider-agnostic steps that dispatch to the
+/// `Provisioner` matching the run's `hyperscaler` input. New clouds plug in by
+/// implementing `Provisioner` and registering in the `ProvisionerRegistry`.
+#[derive(Clone)]
+pub struct ProvisionModule {
+    reg: std::sync::Arc<ProvisionerRegistry>,
+}
+
+impl Default for ProvisionModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ProvisionModule {
+    /// Module with the built-in providers (AWS today).
     pub fn new() -> Self {
-        Self
+        Self { reg: std::sync::Arc::new(ProvisionerRegistry::new()) }
+    }
+
+    /// Module with a custom provisioner registry (e.g. AWS + GCP + Azure).
+    pub fn with_registry(reg: std::sync::Arc<ProvisionerRegistry>) -> Self {
+        Self { reg }
     }
 }
 
@@ -409,17 +524,19 @@ impl Module for ProvisionModule {
 
     fn steps(&self) -> Vec<Box<dyn Step>> {
         vec![
-            Box::new(ClusterSpecStep),
-            Box::new(PreflightAwsStep),
-            Box::new(EnsureBaseDomainStep),
-            Box::new(WriteInstallConfigStep),
-            Box::new(CreateClusterStep::new()),
+            Box::new(ClusterSpecStep { reg: self.reg.clone() }),
+            Box::new(PreflightStep { reg: self.reg.clone() }),
+            Box::new(EnsureDnsStep { reg: self.reg.clone() }),
+            Box::new(WriteConfigStep { reg: self.reg.clone() }),
+            Box::new(CreateClusterStep { reg: self.reg.clone() }),
         ]
     }
 }
 
-/// Step 1: collect (or confirm) the cluster spec inputs.
-struct ClusterSpecStep;
+/// Step 1: collect/validate the cluster spec for the selected provider.
+struct ClusterSpecStep {
+    reg: std::sync::Arc<ProvisionerRegistry>,
+}
 
 #[async_trait]
 impl Step for ClusterSpecStep {
@@ -432,22 +549,22 @@ impl Step for ClusterSpecStep {
     }
 
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        let missing = REQUIRED_INPUTS
+        let p = self.reg.get(&provider_id(ctx));
+        let missing = p
+            .required_inputs()
             .iter()
             .any(|key| ctx.input(key).map(str::is_empty).unwrap_or(true));
 
         if missing {
             return StepOutcome::NeedsInput {
-                prompt: "Provide the OpenShift cluster spec for the watsonx.data \
-                         installation."
-                    .to_string(),
-                fields: spec_fields(),
+                prompt: format!("Provide the {} cluster spec.", p.display_name()),
+                fields: p.spec_fields(),
             };
         }
 
-        // Validate the cluster name up front (openshift-install requires an
-        // RFC 1123 name for metadata.name). Re-ask with a valid suggestion rather
-        // than silently renaming or failing deep in `create cluster`.
+        // `cluster_name` is universal across clouds (OpenShift requires an
+        // RFC 1123 name). Re-ask with a valid suggestion rather than silently
+        // renaming or failing deep in `create cluster`.
         let name = ctx.input("cluster_name").unwrap_or("");
         if !is_valid_cluster_name(name) {
             return StepOutcome::NeedsInput {
@@ -471,6 +588,94 @@ impl Step for ClusterSpecStep {
     }
 }
 
+/// Step 2: provider preflight (tooling + credentials).
+struct PreflightStep {
+    reg: std::sync::Arc<ProvisionerRegistry>,
+}
+#[async_trait]
+impl Step for PreflightStep {
+    fn id(&self) -> &str {
+        "preflight-aws"
+    }
+    fn title(&self) -> &str {
+        "Preflight"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        self.reg.get(&provider_id(ctx)).preflight(ctx).await
+    }
+}
+
+/// Step 3: ensure the base-domain DNS zone.
+struct EnsureDnsStep {
+    reg: std::sync::Arc<ProvisionerRegistry>,
+}
+#[async_trait]
+impl Step for EnsureDnsStep {
+    fn id(&self) -> &str {
+        "ensure-dns-zone"
+    }
+    fn title(&self) -> &str {
+        "Ensure base-domain DNS zone"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        self.reg.get(&provider_id(ctx)).ensure_dns(ctx).await
+    }
+}
+
+/// Step 4: write the provider's install config.
+struct WriteConfigStep {
+    reg: std::sync::Arc<ProvisionerRegistry>,
+}
+#[async_trait]
+impl Step for WriteConfigStep {
+    fn id(&self) -> &str {
+        "write-install-config"
+    }
+    fn title(&self) -> &str {
+        "Write install config"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        match self.reg.get(&provider_id(ctx)).write_install_config(ctx) {
+            Ok(_) => {
+                ctx.progress(100);
+                StepOutcome::Completed
+            }
+            Err(outcome) => outcome,
+        }
+    }
+}
+
+/// Step 5: create the cluster. Regenerates the install config before each
+/// attempt (until the installer has consumed it) so a retry uses fresh config.
+struct CreateClusterStep {
+    reg: std::sync::Arc<ProvisionerRegistry>,
+}
+#[cfg(test)]
+impl CreateClusterStep {
+    fn new() -> Self {
+        Self { reg: std::sync::Arc::new(ProvisionerRegistry::new()) }
+    }
+}
+#[async_trait]
+impl Step for CreateClusterStep {
+    fn id(&self) -> &str {
+        "create-cluster"
+    }
+    fn title(&self) -> &str {
+        "Create cluster"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        let p = self.reg.get(&provider_id(ctx));
+        let started = cluster_dir(ctx).join(".openshift_install_state.json").exists();
+        if !kubeconfig_path(ctx).exists() && !started {
+            if let Err(outcome) = p.write_install_config(ctx) {
+                return outcome;
+            }
+        }
+        p.create(ctx).await
+    }
+}
+
 /// Whether `name` is a valid RFC 1123 subdomain for `metadata.name`.
 fn is_valid_cluster_name(name: &str) -> bool {
     if name.is_empty() || name.len() > 253 {
@@ -483,27 +688,18 @@ fn is_valid_cluster_name(name: &str) -> bool {
     all_valid && alnum(name.chars().next()) && alnum(name.chars().last())
 }
 
-/// Step 2: verify the local tooling and AWS credentials are usable.
-struct PreflightAwsStep;
-
-impl PreflightAwsStep {
-    /// Run one preflight check, returning an error string on failure.
-    async fn check(
-        runner: &dyn CommandRunner,
-        program: &str,
-        args: &[String],
-        env: &[(String, String)],
-        what: &str,
-    ) -> Result<(), String> {
-        match runner.run_with_env(program, args, env).await {
-            Ok(out) if out.success() => Ok(()),
-            Ok(out) => Err(format!(
-                "{what} failed (exit {}): {}",
-                out.status,
-                out.stderr.trim()
-            )),
-            Err(e) => Err(format!("{what}: could not run `{program}`: {e}")),
-        }
+/// Run one preflight check, returning an error string on failure.
+async fn preflight_check(
+    runner: &dyn CommandRunner,
+    program: &str,
+    args: &[String],
+    env: &[(String, String)],
+    what: &str,
+) -> Result<(), String> {
+    match runner.run_with_env(program, args, env).await {
+        Ok(out) if out.success() => Ok(()),
+        Ok(out) => Err(format!("{what} failed (exit {}): {}", out.status, out.stderr.trim())),
+        Err(e) => Err(format!("{what}: could not run `{program}`: {e}")),
     }
 }
 
@@ -522,56 +718,38 @@ fn aws_env(ctx: &StepContext) -> Vec<(String, String)> {
     env
 }
 
-#[async_trait]
-impl Step for PreflightAwsStep {
-    fn id(&self) -> &str {
-        "preflight-aws"
-    }
-
-    fn title(&self) -> &str {
-        "Preflight AWS"
-    }
-
-    async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        let runner = ctx.runner();
-        let env = aws_env(ctx);
-
-        let checks = [
-            (
-                "openshift-install",
-                vec!["version".to_string()],
-                "openshift-install availability",
-            ),
-            ("aws", vec!["--version".to_string()], "aws CLI availability"),
-            (
-                "aws",
-                vec!["sts".to_string(), "get-caller-identity".to_string()],
-                "AWS credentials (aws sts get-caller-identity)",
-            ),
-        ];
-
-        for (program, args, what) in checks {
-            ctx.log(format!("preflight: {what}"));
-            if let Err(error) = Self::check(runner, program, &args, &env, what).await {
-                return StepOutcome::Failed {
-                    error,
-                    next_steps: vec![
-                        "Install openshift-install (the OpenShift IPI installer) and \
-                         put it on PATH."
-                            .to_string(),
-                        "Install the AWS CLI v2 and put it on PATH.".to_string(),
-                        "Configure AWS credentials (aws configure, or AWS_ACCESS_KEY_ID / \
-                         AWS_SECRET_ACCESS_KEY) for an account with provisioning rights."
-                            .to_string(),
-                    ],
-                };
-            }
+/// AWS preflight: verify `openshift-install` + `aws` CLI + credentials.
+async fn aws_preflight(ctx: &StepContext) -> StepOutcome {
+    let runner = ctx.runner();
+    let env = aws_env(ctx);
+    let checks = [
+        ("openshift-install", vec!["version".to_string()], "openshift-install availability"),
+        ("aws", vec!["--version".to_string()], "aws CLI availability"),
+        (
+            "aws",
+            vec!["sts".to_string(), "get-caller-identity".to_string()],
+            "AWS credentials (aws sts get-caller-identity)",
+        ),
+    ];
+    for (program, args, what) in checks {
+        ctx.log(format!("preflight: {what}"));
+        if let Err(error) = preflight_check(runner, program, &args, &env, what).await {
+            return StepOutcome::Failed {
+                error,
+                next_steps: vec![
+                    "Install openshift-install (the OpenShift IPI installer) and put it on PATH."
+                        .to_string(),
+                    "Install the AWS CLI v2 and put it on PATH.".to_string(),
+                    "Configure AWS credentials (aws configure, or AWS_ACCESS_KEY_ID / \
+                     AWS_SECRET_ACCESS_KEY) for an account with provisioning rights."
+                        .to_string(),
+                ],
+            };
         }
-
-        ctx.log("preflight passed");
-        ctx.progress(100);
-        StepOutcome::Completed
     }
+    ctx.log("preflight passed");
+    ctx.progress(100);
+    StepOutcome::Completed
 }
 
 /// Parse `aws route53 list-hosted-zones --output json` into the **public** zones
@@ -634,22 +812,16 @@ fn ns_change_batch(base: &str, ns: &[String]) -> String {
     )
 }
 
-/// Step: ensure the base domain is a usable public Route53 hosted zone. If it
-/// already exists, pass. If not and the user opted in
-/// (`create_base_domain_zone=true`), create it — auto-delegating in the parent
-/// zone when `base` is a subdomain of one the account already hosts; for an
-/// apex/unowned domain, create it and surface the NS records for registrar
+/// Create the Route53 hosted zone for `base` and, when it is a subdomain of an
+/// existing public zone, auto-delegate by UPSERTing the NS record set in the
+/// parent. For an apex/unowned domain, surface the NS records for registrar
 /// delegation.
-struct EnsureBaseDomainStep;
-
-impl EnsureBaseDomainStep {
-    async fn create_zone(
-        &self,
-        ctx: &StepContext,
-        base: &str,
-        zones: &[(String, String)],
-        env: &[(String, String)],
-    ) -> StepOutcome {
+async fn aws_create_zone(
+    ctx: &StepContext,
+    base: &str,
+    zones: &[(String, String)],
+    env: &[(String, String)],
+) -> StepOutcome {
         ctx.log(format!("creating Route53 hosted zone for {base}"));
         let caller_ref = format!("wxd-{}-{base}", ctx.run_id);
         let create = ctx
@@ -757,17 +929,10 @@ impl EnsureBaseDomainStep {
             },
         }
     }
-}
 
-#[async_trait]
-impl Step for EnsureBaseDomainStep {
-    fn id(&self) -> &str {
-        "ensure-dns-zone"
-    }
-    fn title(&self) -> &str {
-        "Ensure base-domain DNS zone"
-    }
-    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+/// AWS: ensure the base domain is a usable public Route53 hosted zone — validate
+/// it exists, or (when opted in) create it and auto-delegate for a subdomain.
+async fn aws_ensure_dns(ctx: &StepContext) -> StepOutcome {
         let base = match ctx.input("base_domain").filter(|d| !d.is_empty()) {
             Some(d) => d.trim_end_matches('.').to_string(),
             None => {
@@ -828,12 +993,10 @@ impl Step for EnsureBaseDomainStep {
             };
         }
 
-        self.create_zone(ctx, &base, &zones, &env).await
-    }
+        aws_create_zone(ctx, &base, &zones, &env).await
 }
 
-/// Step 3: render and write `install-config.yaml` into the cluster dir.
-struct WriteInstallConfigStep;
+/// Render and write `install-config.yaml` into the cluster dir.
 
 /// Render and write `install-config.yaml` from the run's inputs/secrets. Returns
 /// the path on success, or a `StepOutcome` (NeedsInput for the pull secret, or
@@ -926,67 +1089,6 @@ fn write_install_config(ctx: &StepContext) -> Result<std::path::PathBuf, StepOut
     Ok(path)
 }
 
-#[async_trait]
-impl Step for WriteInstallConfigStep {
-    fn id(&self) -> &str {
-        "write-install-config"
-    }
-
-    fn title(&self) -> &str {
-        "Write install-config.yaml"
-    }
-
-    async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        match write_install_config(ctx) {
-            Ok(_) => {
-                ctx.progress(100);
-                StepOutcome::Completed
-            }
-            Err(outcome) => outcome,
-        }
-    }
-}
-
-/// Step 4: provision the cluster (delegates to a [`Provisioner`]). Idempotent.
-struct CreateClusterStep {
-    provisioner: AwsProvisioner,
-}
-
-impl CreateClusterStep {
-    fn new() -> Self {
-        Self {
-            provisioner: AwsProvisioner::new(),
-        }
-    }
-}
-
-#[async_trait]
-impl Step for CreateClusterStep {
-    fn id(&self) -> &str {
-        "create-cluster"
-    }
-
-    fn title(&self) -> &str {
-        "Create cluster"
-    }
-
-    async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        // Regenerate install-config.yaml from current inputs before the installer
-        // has consumed it (first attempt, or a retry after a config-validation
-        // failure). Once openshift-install has started (state file present) we
-        // leave the dir alone so `create cluster` resumes correctly.
-        let started = cluster_dir(ctx)
-            .join(".openshift_install_state.json")
-            .exists();
-        if !kubeconfig_path(ctx).exists() && !started {
-            if let Err(outcome) = write_install_config(ctx) {
-                return outcome;
-            }
-        }
-        self.provisioner.create(ctx).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1036,6 +1138,11 @@ mod tests {
         m
     }
 
+    /// A cluster-spec step backed by the default (AWS) provisioner registry.
+    fn cluster_spec() -> ClusterSpecStep {
+        ClusterSpecStep { reg: std::sync::Arc::new(ProvisionerRegistry::new()) }
+    }
+
     #[tokio::test]
     async fn cluster_spec_needs_input_when_empty() {
         let ctx = ctx_with(
@@ -1044,7 +1151,7 @@ mod tests {
             BTreeMap::new(),
             temp_dir("spec-empty"),
         );
-        let outcome = ClusterSpecStep.run(&ctx).await;
+        let outcome = cluster_spec().run(&ctx).await;
         match outcome {
             StepOutcome::NeedsInput { fields, .. } => {
                 assert_eq!(fields.len(), 9, "should request all spec fields");
@@ -1067,7 +1174,7 @@ mod tests {
             BTreeMap::new(),
             temp_dir("spec-full"),
         );
-        assert_eq!(ClusterSpecStep.run(&ctx).await, StepOutcome::Completed);
+        assert_eq!(cluster_spec().run(&ctx).await, StepOutcome::Completed);
     }
 
     #[tokio::test]
@@ -1082,10 +1189,7 @@ mod tests {
             dir.clone(),
         );
 
-        assert_eq!(
-            WriteInstallConfigStep.run(&ctx).await,
-            StepOutcome::Completed
-        );
+        assert!(write_install_config(&ctx).is_ok());
 
         let written =
             std::fs::read_to_string(dir.join("cluster").join("install-config.yaml")).unwrap();
@@ -1168,7 +1272,7 @@ mod tests {
             r#"{"HostedZones":[{"Name":"example.com.","Id":"/hostedzone/Z1","Config":{"PrivateZone":false}}]}"#,
         )]));
         let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir);
-        assert_eq!(EnsureBaseDomainStep.run(&ctx).await, StepOutcome::Completed);
+        assert_eq!(aws_ensure_dns(&ctx).await, StepOutcome::Completed);
     }
 
     #[tokio::test]
@@ -1179,7 +1283,7 @@ mod tests {
         )]));
         // base_domain=example.com not present, opt-in not set.
         let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir);
-        match EnsureBaseDomainStep.run(&ctx).await {
+        match aws_ensure_dns(&ctx).await {
             StepOutcome::Failed { next_steps, .. } => {
                 assert!(next_steps.iter().any(|s| s.contains("ocpcpdtest.com")));
                 assert!(next_steps.iter().any(|s| s.contains("Create the base-domain")));
@@ -1200,7 +1304,7 @@ mod tests {
             MockResponse::ok("change-resource-record-sets", "{}"),
         ]));
         let ctx = ctx_with(runner.clone(), inputs, BTreeMap::new(), dir);
-        assert_eq!(EnsureBaseDomainStep.run(&ctx).await, StepOutcome::Completed);
+        assert_eq!(aws_ensure_dns(&ctx).await, StepOutcome::Completed);
         let calls = runner.calls();
         assert!(calls.iter().any(|c| c.contains("create-hosted-zone")), "{calls:?}");
         assert!(calls.iter().any(|c| c.contains("change-resource-record-sets")), "{calls:?}");
@@ -1217,7 +1321,7 @@ mod tests {
             MockResponse::ok("create-hosted-zone", r#"{"DelegationSet":{"NameServers":["ns-9.awsdns-09.org"]}}"#),
         ]));
         let ctx = ctx_with(runner, inputs, BTreeMap::new(), dir);
-        match EnsureBaseDomainStep.run(&ctx).await {
+        match aws_ensure_dns(&ctx).await {
             StepOutcome::Failed { next_steps, .. } => {
                 assert!(next_steps.iter().any(|s| s.contains("registrar")));
                 assert!(next_steps.iter().any(|s| s.contains("ns-9.awsdns-09.org")));
@@ -1247,7 +1351,7 @@ mod tests {
             BTreeMap::new(),
             temp_dir("spec-badname"),
         );
-        match ClusterSpecStep.run(&ctx).await {
+        match cluster_spec().run(&ctx).await {
             StepOutcome::NeedsInput { fields, .. } => {
                 assert_eq!(fields[0].key, "cluster_name");
                 assert_eq!(fields[0].default.as_deref(), Some("bad-name"));
@@ -1328,7 +1432,7 @@ mod tests {
             MockResponse::fail("sts get-caller-identity", 255, "ExpiredToken"),
         ]));
         let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir);
-        match PreflightAwsStep.run(&ctx).await {
+        match aws_preflight(&ctx).await {
             StepOutcome::Failed { error, next_steps } => {
                 assert!(error.contains("ExpiredToken"), "error: {error}");
                 assert!(!next_steps.is_empty());
@@ -1347,7 +1451,7 @@ mod tests {
             r#"{"HostedZones":[{"Name":"example.com.","Config":{"PrivateZone":false}}]}"#,
         )]));
         let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir);
-        assert_eq!(PreflightAwsStep.run(&ctx).await, StepOutcome::Completed);
+        assert_eq!(aws_preflight(&ctx).await, StepOutcome::Completed);
     }
 
     #[test]
