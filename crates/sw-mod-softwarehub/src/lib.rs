@@ -14,6 +14,17 @@ fn input_or<'a>(ctx: &'a StepContext, key: &str, default: &'a str) -> String {
     ctx.input(key).unwrap_or(default).to_string()
 }
 
+/// The (block, file) storage classes for `apply-cr`. Software Hub + watsonx.data
+/// need both a block (RWO) and a file (RWX) class. Defaults match a provisioned
+/// AWS cluster: `gp3-csi` (EBS, block) and `efs-sc` (EFS, RWX file). Override via
+/// the `block_storage_class` / `file_storage_class` inputs (e.g. ODF classes).
+fn storage_classes(ctx: &StepContext) -> (String, String) {
+    (
+        input_or(ctx, "block_storage_class", "gp3-csi"),
+        input_or(ctx, "file_storage_class", "efs-sc"),
+    )
+}
+
 // ---- steps ----------------------------------------------------------------
 
 /// Verify the client tooling and an authenticated session exist, and that the
@@ -219,7 +230,10 @@ impl Step for InstallControlPlane {
             }
         }
 
-        ctx.log("applying platform control plane (cpd_platform)");
+        let (block_sc, file_sc) = storage_classes(ctx);
+        ctx.log(format!(
+            "applying platform control plane (cpd_platform); block={block_sc}, file={file_sc}"
+        ));
         let args = vec![
             "manage".into(),
             "apply-cr".into(),
@@ -227,6 +241,8 @@ impl Step for InstallControlPlane {
             "--components=cpd_platform".into(),
             format!("--cpd_instance_ns={operands_ns}"),
             format!("--cpd_operator_ns={operators_ns}"),
+            format!("--block_storage_class={block_sc}"),
+            format!("--file_storage_class={file_sc}"),
         ];
         match ctx.run_in_cluster("cpd-cli", &args).await {
             Ok(o) if o.success() => {

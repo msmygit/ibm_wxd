@@ -29,11 +29,13 @@ fn services_module() -> sw_mod_services::ComponentsModule {
 }
 
 /// "Provision a new cluster" graph: install prerequisites → provision (AWS IPI)
-/// → install Software Hub → install services (watsonx.data by default).
+/// → provision RWX storage (EFS) → install Software Hub → install services
+/// (watsonx.data by default).
 pub fn default_registry() -> ModuleRegistry {
     ModuleRegistry::new()
         .with(Box::new(sw_mod_prereqs::PrereqsModule))
         .with(Box::new(sw_mod_provision::ProvisionModule::new()))
+        .with(Box::new(sw_mod_storage::StorageModule))
         .with(Box::new(sw_mod_softwarehub::SoftwareHubModule))
         .with(Box::new(services_module()))
 }

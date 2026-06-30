@@ -9,6 +9,7 @@ members = [
     "crates/sw-mod-prereqs",
     "crates/sw-mod-softwarehub",
     "crates/sw-mod-services",
+    "crates/sw-mod-storage",
     "crates/wxd-svc-watsonxdata",
 ]
 
