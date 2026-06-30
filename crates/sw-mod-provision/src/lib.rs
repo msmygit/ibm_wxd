@@ -348,15 +348,35 @@ pub fn render_install_config(
     )
 }
 
-/// Build the AWS userTags for a run: always include `Name=<cluster_name>` (so
-/// every resource is tagged with the user-provided name) plus any extra
-/// `resource_tags`.
+/// Sanitize a user-supplied name into an RFC 1123 subdomain that
+/// `openshift-install` accepts for `metadata.name`: lowercase, only
+/// `[a-z0-9.-]`, starting and ending with an alphanumeric. Invalid characters
+/// (e.g. `_`) become `-`. Falls back to `wxd` if nothing valid remains.
+pub fn sanitize_cluster_name(raw: &str) -> String {
+    let mapped: String = raw
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '-' })
+        .collect();
+    let trimmed = mapped.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    if trimmed.is_empty() {
+        "wxd".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Build the AWS `userTags` for a run. AWS IPI reserves the `Name` and
+/// `kubernetes.io/*` tag keys, so we tag with `cluster-name=<name>` (plus any
+/// extra `resource_tags`); openshift-install already adds its own `Name` tags.
 fn build_user_tags(cluster_name: &str, resource_tags: &str) -> Vec<(String, String)> {
-    let mut tags = vec![("Name".to_string(), cluster_name.to_string())];
+    let mut tags = vec![("cluster-name".to_string(), cluster_name.to_string())];
     for (k, v) in parse_tags(resource_tags) {
-        if k != "Name" {
-            tags.push((k, v));
+        if k.eq_ignore_ascii_case("Name") || k.starts_with("kubernetes.io/") || k == "cluster-name" {
+            continue; // reserved / already set
         }
+        tags.push((k, v));
     }
     tags
 }
@@ -418,9 +438,42 @@ impl Step for ClusterSpecStep {
             };
         }
 
+        // Validate the cluster name up front (openshift-install requires an
+        // RFC 1123 name for metadata.name). Re-ask with a valid suggestion rather
+        // than silently renaming or failing deep in `create cluster`.
+        let name = ctx.input("cluster_name").unwrap_or("");
+        if !is_valid_cluster_name(name) {
+            return StepOutcome::NeedsInput {
+                prompt: format!(
+                    "\"{name}\" isn't a valid cluster name. Use only lowercase letters, \
+                     numbers, '-' and '.', starting and ending with a letter or number \
+                     (e.g. {}).",
+                    sanitize_cluster_name(name)
+                ),
+                fields: vec![InputField {
+                    key: "cluster_name".to_string(),
+                    label: "Cluster / resource name (lowercase RFC 1123)".to_string(),
+                    secret: false,
+                    default: Some(sanitize_cluster_name(name)),
+                }],
+            };
+        }
+
         ctx.log("cluster spec complete");
         StepOutcome::Completed
     }
+}
+
+/// Whether `name` is a valid RFC 1123 subdomain for `metadata.name`.
+fn is_valid_cluster_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 253 {
+        return false;
+    }
+    let all_valid = name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.');
+    let alnum = |c: Option<char>| matches!(c, Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit());
+    all_valid && alnum(name.chars().next()) && alnum(name.chars().last())
 }
 
 /// Step 2: verify the local tooling and AWS credentials are usable.
@@ -517,6 +570,97 @@ impl Step for PreflightAwsStep {
 /// Step 3: render and write `install-config.yaml` into the cluster dir.
 struct WriteInstallConfigStep;
 
+/// Render and write `install-config.yaml` from the run's inputs/secrets. Returns
+/// the path on success, or a `StepOutcome` (NeedsInput for the pull secret, or
+/// Failed) to surface to the user. Shared by the write step and create step so a
+/// retry always regenerates a fresh, correct config (openshift-install validates
+/// and consumes it on each `create cluster`).
+fn write_install_config(ctx: &StepContext) -> Result<std::path::PathBuf, StepOutcome> {
+    let region = ctx.input("region").unwrap_or("us-east-1");
+    let base_domain = match ctx.input("base_domain") {
+        Some(d) if !d.is_empty() => d,
+        _ => {
+            return Err(StepOutcome::Failed {
+                error: "base_domain is required to render install-config.yaml".to_string(),
+                next_steps: vec![
+                    "Re-run the cluster-spec step and supply a Route53 base domain.".to_string(),
+                ],
+            });
+        }
+    };
+    let control_plane_type = ctx.input("control_plane_type").unwrap_or("m6i.2xlarge");
+    let control_plane_count = ctx.input("control_plane_count").unwrap_or("3");
+    let worker_type = ctx.input("worker_type").unwrap_or("m6i.4xlarge");
+    let worker_count = ctx.input("worker_count").unwrap_or("3");
+    let cluster_name = ctx.input("cluster_name").unwrap_or("wxd");
+    let pull_secret = match ctx.secret("pull_secret") {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            return Err(StepOutcome::NeedsInput {
+                prompt: "Paste your Red Hat pull secret (from \
+                         console.redhat.com/openshift/install/pull-secret). \
+                         Optionally add an SSH public key for node debugging."
+                    .to_string(),
+                fields: vec![
+                    InputField {
+                        key: "pull_secret".to_string(),
+                        label: "Red Hat pull secret (JSON)".to_string(),
+                        secret: true,
+                        default: None,
+                    },
+                    InputField {
+                        key: "ssh_key".to_string(),
+                        label: "SSH public key (optional)".to_string(),
+                        secret: false,
+                        default: None,
+                    },
+                ],
+            });
+        }
+    };
+    let ssh_key = ctx.input("ssh_key");
+    let resource_tags = ctx.input("resource_tags").unwrap_or("");
+    let user_tags = build_user_tags(cluster_name, resource_tags);
+    ctx.log(format!(
+        "tagging all cloud resources with: {}",
+        user_tags
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+
+    let config = render_install_config(
+        cluster_name,
+        base_domain,
+        region,
+        control_plane_type,
+        control_plane_count,
+        worker_type,
+        worker_count,
+        pull_secret,
+        ssh_key,
+        &user_tags,
+    );
+
+    let dir = cluster_dir(ctx);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Err(StepOutcome::Failed {
+            error: format!("could not create cluster dir {}: {e}", dir.display()),
+            next_steps: vec!["Check filesystem permissions for the artifacts directory.".to_string()],
+        });
+    }
+    let path = dir.join("install-config.yaml");
+    if let Err(e) = std::fs::write(&path, config) {
+        return Err(StepOutcome::Failed {
+            error: format!("could not write {}: {e}", path.display()),
+            next_steps: vec!["Check filesystem permissions for the artifacts directory.".to_string()],
+        });
+    }
+    ctx.log(format!("wrote install-config.yaml to {}", path.display()));
+    Ok(path)
+}
+
 #[async_trait]
 impl Step for WriteInstallConfigStep {
     fn id(&self) -> &str {
@@ -528,101 +672,13 @@ impl Step for WriteInstallConfigStep {
     }
 
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        let region = ctx.input("region").unwrap_or("us-east-1");
-        let base_domain = match ctx.input("base_domain") {
-            Some(d) if !d.is_empty() => d,
-            _ => {
-                return StepOutcome::Failed {
-                    error: "base_domain is required to render install-config.yaml"
-                        .to_string(),
-                    next_steps: vec![
-                        "Re-run the cluster-spec step and supply a Route53 base domain."
-                            .to_string(),
-                    ],
-                };
+        match write_install_config(ctx) {
+            Ok(_) => {
+                ctx.progress(100);
+                StepOutcome::Completed
             }
-        };
-        let control_plane_type = ctx.input("control_plane_type").unwrap_or("m6i.2xlarge");
-        let control_plane_count = ctx.input("control_plane_count").unwrap_or("3");
-        let worker_type = ctx.input("worker_type").unwrap_or("m6i.4xlarge");
-        let worker_count = ctx.input("worker_count").unwrap_or("3");
-        let cluster_name = ctx.input("cluster_name").unwrap_or("wxd");
-        let pull_secret = match ctx.secret("pull_secret") {
-            Some(s) if !s.is_empty() => s,
-            _ => {
-                // Request it inline so the UI can collect it as a masked field.
-                return StepOutcome::NeedsInput {
-                    prompt: "Paste your Red Hat pull secret (from \
-                             console.redhat.com/openshift/install/pull-secret). \
-                             Optionally add an SSH public key for node debugging."
-                        .to_string(),
-                    fields: vec![
-                        InputField {
-                            key: "pull_secret".to_string(),
-                            label: "Red Hat pull secret (JSON)".to_string(),
-                            secret: true,
-                            default: None,
-                        },
-                        InputField {
-                            key: "ssh_key".to_string(),
-                            label: "SSH public key (optional)".to_string(),
-                            secret: false,
-                            default: None,
-                        },
-                    ],
-                };
-            }
-        };
-        let ssh_key = ctx.input("ssh_key");
-        let resource_tags = ctx.input("resource_tags").unwrap_or("");
-        let user_tags = build_user_tags(cluster_name, resource_tags);
-        ctx.log(format!(
-            "tagging all cloud resources with: {}",
-            user_tags
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-
-        let config = render_install_config(
-            cluster_name,
-            base_domain,
-            region,
-            control_plane_type,
-            control_plane_count,
-            worker_type,
-            worker_count,
-            pull_secret,
-            ssh_key,
-            &user_tags,
-        );
-
-        let dir = cluster_dir(ctx);
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            return StepOutcome::Failed {
-                error: format!("could not create cluster dir {}: {e}", dir.display()),
-                next_steps: vec![
-                    "Check filesystem permissions for the artifacts directory."
-                        .to_string(),
-                ],
-            };
+            Err(outcome) => outcome,
         }
-
-        let path = dir.join("install-config.yaml");
-        if let Err(e) = std::fs::write(&path, config) {
-            return StepOutcome::Failed {
-                error: format!("could not write {}: {e}", path.display()),
-                next_steps: vec![
-                    "Check filesystem permissions for the artifacts directory."
-                        .to_string(),
-                ],
-            };
-        }
-
-        ctx.log(format!("wrote install-config.yaml to {}", path.display()));
-        ctx.progress(100);
-        StepOutcome::Completed
     }
 }
 
@@ -650,6 +706,18 @@ impl Step for CreateClusterStep {
     }
 
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        // Regenerate install-config.yaml from current inputs before the installer
+        // has consumed it (first attempt, or a retry after a config-validation
+        // failure). Once openshift-install has started (state file present) we
+        // leave the dir alone so `create cluster` resumes correctly.
+        let started = cluster_dir(ctx)
+            .join(".openshift_install_state.json")
+            .exists();
+        if !kubeconfig_path(ctx).exists() && !started {
+            if let Err(outcome) = write_install_config(ctx) {
+                return outcome;
+            }
+        }
         self.provisioner.create(ctx).await
     }
 }
@@ -762,8 +830,10 @@ mod tests {
         assert!(written.contains("baseDomain: example.com"));
         assert!(written.contains("pullSecret"));
         // Every resource is tagged with the user-provided name + extra tags.
+        // AWS reserves the `Name` key, so we use `cluster-name`.
         assert!(written.contains("userTags:"), "userTags block missing: {written}");
-        assert!(written.contains("Name: 'wxd-test'"), "Name tag missing: {written}");
+        assert!(written.contains("cluster-name: 'wxd-test'"), "cluster-name tag missing: {written}");
+        assert!(!written.contains("\n      Name:"), "reserved Name tag must not appear: {written}");
         assert!(written.contains("owner: 'qa'"), "extra tag missing: {written}");
     }
 
@@ -776,10 +846,43 @@ mod tests {
     }
 
     #[test]
-    fn build_user_tags_always_includes_name() {
-        let tags = build_user_tags("my-cluster", "owner=qa");
-        assert_eq!(tags[0], ("Name".to_string(), "my-cluster".to_string()));
+    fn build_user_tags_uses_non_reserved_key_and_drops_reserved() {
+        let tags = build_user_tags("my-cluster", "owner=qa,Name=nope,kubernetes.io/x=y");
+        assert_eq!(tags[0], ("cluster-name".to_string(), "my-cluster".to_string()));
         assert!(tags.contains(&("owner".to_string(), "qa".to_string())));
+        // Reserved keys are excluded.
+        assert!(!tags.iter().any(|(k, _)| k.eq_ignore_ascii_case("Name")));
+        assert!(!tags.iter().any(|(k, _)| k.starts_with("kubernetes.io/")));
+    }
+
+    #[test]
+    fn cluster_name_validation() {
+        assert!(is_valid_cluster_name("wxd"));
+        assert!(is_valid_cluster_name("sw-wxd-install-prac-auto1"));
+        assert!(!is_valid_cluster_name("sw_wxd_install_prac_auto1")); // underscores
+        assert!(!is_valid_cluster_name("WXD")); // uppercase
+        assert!(!is_valid_cluster_name("-wxd")); // leading dash
+        assert!(!is_valid_cluster_name(""));
+        assert_eq!(sanitize_cluster_name("sw_wxd_install_prac_auto1"), "sw-wxd-install-prac-auto1");
+    }
+
+    #[tokio::test]
+    async fn cluster_spec_reprompts_on_invalid_name() {
+        let mut inputs = full_spec_inputs();
+        inputs.insert("cluster_name".into(), "Bad_Name".into());
+        let ctx = ctx_with(
+            Arc::new(MockCommandRunner::new(vec![])),
+            inputs,
+            BTreeMap::new(),
+            temp_dir("spec-badname"),
+        );
+        match ClusterSpecStep.run(&ctx).await {
+            StepOutcome::NeedsInput { fields, .. } => {
+                assert_eq!(fields[0].key, "cluster_name");
+                assert_eq!(fields[0].default.as_deref(), Some("bad-name"));
+            }
+            o => panic!("expected NeedsInput re-prompt, got {o:?}"),
+        }
     }
 
     #[tokio::test]
@@ -789,12 +892,9 @@ mod tests {
             "create cluster",
             "INFO Install complete!",
         )]));
-        let ctx = ctx_with(
-            runner.clone(),
-            full_spec_inputs(),
-            BTreeMap::new(),
-            dir,
-        );
+        let mut secrets = BTreeMap::new();
+        secrets.insert("pull_secret".to_string(), "{\"auths\":{}}".to_string());
+        let ctx = ctx_with(runner.clone(), full_spec_inputs(), secrets, dir);
         assert_eq!(CreateClusterStep::new().run(&ctx).await, StepOutcome::Completed);
         // Confirm the work went through the runner.
         assert!(
@@ -836,7 +936,9 @@ mod tests {
             1,
             "quota exceeded",
         )]));
-        let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir);
+        let mut secrets = BTreeMap::new();
+        secrets.insert("pull_secret".to_string(), "{\"auths\":{}}".to_string());
+        let ctx = ctx_with(runner, full_spec_inputs(), secrets, dir);
         match CreateClusterStep::new().run(&ctx).await {
             StepOutcome::Failed { error, next_steps } => {
                 assert!(error.contains("quota exceeded"), "error: {error}");

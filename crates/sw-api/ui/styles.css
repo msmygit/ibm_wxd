@@ -175,6 +175,12 @@ button.ghost { background: transparent; }
   background: var(--bg);
   color: var(--ink);
 }
+/* Highlight a required/invalid field in red, but only after the user has tried
+   to submit or interacted (not on initial load). */
+.input-form input:user-invalid {
+  border-color: var(--fail);
+  background: color-mix(in srgb, var(--fail) 8%, transparent);
+}
 
 .icon-btn { font-size: 18px; line-height: 1; padding: 8px 12px; }
 .req { color: var(--fail); font-weight: 700; }
