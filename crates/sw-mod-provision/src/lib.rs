@@ -144,6 +144,103 @@ fn publish_kubeconfig(ctx: &StepContext) {
     }
 }
 
+/// Marker written only after the install is confirmed complete. Its presence —
+/// not a kubeconfig (which appears during bootstrap) — is the safe "provisioned"
+/// signal for idempotent retries.
+fn install_complete_marker(ctx: &StepContext) -> std::path::PathBuf {
+    cluster_dir(ctx).join(".wxd_install_complete")
+}
+
+/// Backup location for `metadata.json`, kept outside the cluster dir so it
+/// survives openshift-install pruning the cluster dir on destroy.
+fn metadata_backup_path(ctx: &StepContext) -> std::path::PathBuf {
+    ctx.artifacts_dir().join("metadata.json.bak")
+}
+
+/// Best-effort: copy the freshly-written `metadata.json` to the backup location.
+/// `metadata.json` carries the random infra-ID suffix that destroy needs.
+fn backup_metadata(ctx: &StepContext) {
+    let src = cluster_dir(ctx).join("metadata.json");
+    if src.exists() {
+        let _ = std::fs::copy(&src, metadata_backup_path(ctx));
+    }
+}
+
+/// Restore `metadata.json` into the cluster dir from the backup when it is
+/// missing (e.g. an interrupted prior destroy removed it). Returns whether a
+/// restore happened.
+fn restore_metadata_if_missing(ctx: &StepContext) -> bool {
+    let dst = cluster_dir(ctx).join("metadata.json");
+    let bak = metadata_backup_path(ctx);
+    if !dst.exists() && bak.exists() {
+        let _ = std::fs::create_dir_all(cluster_dir(ctx));
+        return std::fs::copy(&bak, &dst).is_ok();
+    }
+    false
+}
+
+/// Expand a leading `~/` to `$HOME` for user-supplied file paths.
+fn expand_tilde(p: &str) -> std::path::PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::Path::new(&home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(p)
+}
+
+/// Resolve the Red Hat pull secret from either a pasted JSON value
+/// (`pull_secret` secret) or a path to a file containing it (`pull_secret_path`
+/// input, `~`-expanded). Prompts for either when neither is supplied.
+fn resolve_pull_secret(ctx: &StepContext) -> Result<String, StepOutcome> {
+    if let Some(s) = ctx.secret("pull_secret").filter(|s| !s.trim().is_empty()) {
+        return Ok(s.trim().to_string());
+    }
+    if let Some(p) = ctx.input("pull_secret_path").filter(|p| !p.trim().is_empty()) {
+        let path = expand_tilde(p.trim());
+        return match std::fs::read_to_string(&path) {
+            Ok(c) if !c.trim().is_empty() => Ok(c.trim().to_string()),
+            Ok(_) => Err(StepOutcome::Failed {
+                error: format!("pull secret file is empty: {}", path.display()),
+                next_steps: vec![
+                    "Point pull_secret_path at a non-empty Red Hat pull-secret JSON file, then retry.".to_string(),
+                ],
+            }),
+            Err(e) => Err(StepOutcome::Failed {
+                error: format!("could not read pull secret file {}: {e}", path.display()),
+                next_steps: vec![
+                    "Check the path/permissions, or paste the pull secret instead, then retry.".to_string(),
+                ],
+            }),
+        };
+    }
+    Err(StepOutcome::NeedsInput {
+        prompt: "Provide your Red Hat pull secret (console.redhat.com/openshift/install/pull-secret) — \
+                 paste the JSON OR give a path to a file containing it. Optionally add an SSH public key."
+            .to_string(),
+        fields: vec![
+            InputField {
+                key: "pull_secret".to_string(),
+                label: "Red Hat pull secret (JSON) — paste".to_string(),
+                secret: true,
+                default: None,
+            },
+            InputField {
+                key: "pull_secret_path".to_string(),
+                label: "…or path to a pull-secret file (e.g. ~/.ibm/pull-secret.json)".to_string(),
+                secret: false,
+                default: None,
+            },
+            InputField {
+                key: "ssh_key".to_string(),
+                label: "SSH public key (optional)".to_string(),
+                secret: false,
+                default: None,
+            },
+        ],
+    })
+}
+
 /// AWS implementation of [`Provisioner`] using `openshift-install` IPI.
 ///
 /// The installer reads `install-config.yaml` from the cluster dir (written by
@@ -189,28 +286,70 @@ impl Provisioner for AwsProvisioner {
 
     async fn create(&self, ctx: &StepContext) -> StepOutcome {
         let dir = cluster_dir(ctx);
+        let dir_str = dir.to_string_lossy().into_owned();
+        let env = aws_env(ctx);
 
-        // Idempotency: a kubeconfig means the cluster is already provisioned.
-        if kubeconfig_path(ctx).exists() {
-            ctx.log("cluster already provisioned");
+        // True idempotency: only a recorded completion marker means done.
+        // (A kubeconfig appears during bootstrap — long before the install
+        // actually finishes — so it is NOT a safe "complete" signal.)
+        if install_complete_marker(ctx).exists() {
+            ctx.log("cluster already provisioned (install previously completed)");
             publish_kubeconfig(ctx);
             ctx.progress(100);
             return StepOutcome::Completed;
         }
 
-        ctx.log("provisioning OpenShift cluster via openshift-install (AWS IPI)");
-        ctx.progress(10);
+        // If an install was already started but not confirmed complete (e.g. a
+        // prior attempt timed out waiting for the API), `create cluster` is not
+        // resumable once its local control plane is gone — resume with the
+        // idempotent `wait-for` path instead of starting over.
+        let started = dir.join(".openshift_install_state.json").exists();
+        let outcome = if started {
+            ctx.log("install already in progress — resuming (wait-for bootstrap + install-complete)");
+            ctx.progress(20);
+            let bc = ctx
+                .run_with_env(
+                    "openshift-install",
+                    &["wait-for".into(), "bootstrap-complete".into(), "--dir".into(), dir_str.clone()],
+                    &env,
+                )
+                .await;
+            if matches!(&bc, Ok(o) if o.success()) {
+                // Bootstrap is done — remove the bootstrap node (best-effort;
+                // a normal `create cluster` does this automatically).
+                let _ = ctx
+                    .run_with_env(
+                        "openshift-install",
+                        &["destroy".into(), "bootstrap".into(), "--dir".into(), dir_str.clone()],
+                        &env,
+                    )
+                    .await;
+            }
+            ctx.progress(60);
+            ctx.run_with_env(
+                "openshift-install",
+                &["wait-for".into(), "install-complete".into(), "--dir".into(), dir_str.clone()],
+                &env,
+            )
+            .await
+        } else {
+            ctx.log("provisioning OpenShift cluster via openshift-install (AWS IPI)");
+            ctx.progress(10);
+            ctx.run_with_env(
+                "openshift-install",
+                &["create".into(), "cluster".into(), "--dir".into(), dir_str.clone()],
+                &env,
+            )
+            .await
+        };
 
-        let dir_str = dir.to_string_lossy().into_owned();
-        let args = vec![
-            "create".to_string(),
-            "cluster".to_string(),
-            "--dir".to_string(),
-            dir_str,
-        ];
-
-        match ctx.run_with_env("openshift-install", &args, &aws_env(ctx)).await {
+        match outcome {
             Ok(out) if out.success() => {
+                // Record completion so retries don't re-provision, and back up
+                // metadata.json so a later destroy works even if openshift-install
+                // prunes the cluster dir.
+                let _ = std::fs::write(install_complete_marker(ctx), "ok\n");
+                backup_metadata(ctx);
                 ctx.log("cluster provisioned");
                 publish_kubeconfig(ctx);
                 ctx.progress(100);
@@ -218,7 +357,7 @@ impl Provisioner for AwsProvisioner {
             }
             Ok(out) => StepOutcome::Failed {
                 error: format!(
-                    "openshift-install create cluster failed (exit {}): {}",
+                    "openshift-install failed (exit {}): {}",
                     out.status,
                     out.stderr.trim()
                 ),
@@ -232,14 +371,14 @@ impl Provisioner for AwsProvisioner {
     }
 
     async fn status(&self, ctx: &StepContext) -> StepOutcome {
-        if kubeconfig_path(ctx).exists() {
+        if install_complete_marker(ctx).exists() {
             StepOutcome::Completed
         } else {
             StepOutcome::Failed {
-                error: "no kubeconfig found; cluster does not appear provisioned"
+                error: "install not confirmed complete; cluster does not appear provisioned"
                     .to_string(),
                 next_steps: vec![
-                    "Run the create-cluster step to provision the cluster.".to_string(),
+                    "Run the create-cluster step to provision (or finish provisioning) the cluster.".to_string(),
                 ],
             }
         }
@@ -248,6 +387,12 @@ impl Provisioner for AwsProvisioner {
     async fn destroy(&self, ctx: &StepContext) -> StepOutcome {
         let dir = cluster_dir(ctx);
         let dir_str = dir.to_string_lossy().into_owned();
+        // `openshift-install destroy cluster` needs metadata.json — and a prior
+        // (possibly interrupted) destroy may have already deleted it, orphaning
+        // resources. Restore it from our backup so teardown can always proceed.
+        if restore_metadata_if_missing(ctx) {
+            ctx.log("restored metadata.json from backup for destroy");
+        }
         ctx.log("destroying OpenShift cluster via openshift-install");
         let args = vec![
             "destroy".to_string(),
@@ -666,8 +811,11 @@ impl Step for CreateClusterStep {
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let p = self.reg.get(&provider_id(ctx));
+        let complete = install_complete_marker(ctx).exists();
         let started = cluster_dir(ctx).join(".openshift_install_state.json").exists();
-        if !kubeconfig_path(ctx).exists() && !started {
+        // Only (re)write install-config for a genuinely fresh attempt — not when
+        // resuming an in-progress install or when it already completed.
+        if !complete && !started && !kubeconfig_path(ctx).exists() {
             if let Err(outcome) = p.write_install_config(ctx) {
                 return outcome;
             }
@@ -1015,31 +1163,7 @@ fn write_install_config(ctx: &StepContext) -> Result<std::path::PathBuf, StepOut
     let worker_type = ctx.input("worker_type").unwrap_or("m6i.4xlarge");
     let worker_count = ctx.input("worker_count").unwrap_or("3");
     let cluster_name = ctx.input("cluster_name").unwrap_or("wxd");
-    let pull_secret = match ctx.secret("pull_secret") {
-        Some(s) if !s.is_empty() => s,
-        _ => {
-            return Err(StepOutcome::NeedsInput {
-                prompt: "Paste your Red Hat pull secret (from \
-                         console.redhat.com/openshift/install/pull-secret). \
-                         Optionally add an SSH public key for node debugging."
-                    .to_string(),
-                fields: vec![
-                    InputField {
-                        key: "pull_secret".to_string(),
-                        label: "Red Hat pull secret (JSON)".to_string(),
-                        secret: true,
-                        default: None,
-                    },
-                    InputField {
-                        key: "ssh_key".to_string(),
-                        label: "SSH public key (optional)".to_string(),
-                        secret: false,
-                        default: None,
-                    },
-                ],
-            });
-        }
-    };
+    let pull_secret = resolve_pull_secret(ctx)?;
     let ssh_key = ctx.input("ssh_key");
     let resource_tags = ctx.input("resource_tags").unwrap_or("");
     let user_tags = build_user_tags(cluster_name, resource_tags);
@@ -1060,7 +1184,7 @@ fn write_install_config(ctx: &StepContext) -> Result<std::path::PathBuf, StepOut
         control_plane_count,
         worker_type,
         worker_count,
-        pull_secret,
+        &pull_secret,
         ssh_key,
         &user_tags,
     );
@@ -1169,6 +1293,35 @@ mod tests {
             temp_dir("spec-full"),
         );
         assert_eq!(cluster_spec().run(&ctx).await, StepOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn pull_secret_can_come_from_a_file_path() {
+        let dir = temp_dir("ps-file");
+        // Write a pull-secret file and point the input at it (no pasted secret).
+        let ps_file = dir.join("my-pull-secret.json");
+        std::fs::write(&ps_file, "{\"auths\":{\"x\":{}}}\n").unwrap();
+        let mut inputs = full_spec_inputs();
+        inputs.insert("pull_secret_path".into(), ps_file.to_string_lossy().into_owned());
+
+        let ctx = ctx_with(Arc::new(MockCommandRunner::new(vec![])), inputs, BTreeMap::new(), dir.clone());
+        assert!(write_install_config(&ctx).is_ok(), "file-based pull secret should resolve");
+        let written =
+            std::fs::read_to_string(dir.join("cluster").join("install-config.yaml")).unwrap();
+        assert!(written.contains("\"auths\":{\"x\":{}}"), "file pull secret not embedded: {written}");
+    }
+
+    #[tokio::test]
+    async fn missing_pull_secret_prompts_for_paste_or_path() {
+        let dir = temp_dir("ps-none");
+        let ctx = ctx_with(Arc::new(MockCommandRunner::new(vec![])), full_spec_inputs(), BTreeMap::new(), dir);
+        match write_install_config(&ctx) {
+            Err(StepOutcome::NeedsInput { fields, .. }) => {
+                let keys: Vec<_> = fields.iter().map(|f| f.key.as_str()).collect();
+                assert!(keys.contains(&"pull_secret") && keys.contains(&"pull_secret_path"), "got {keys:?}");
+            }
+            other => panic!("expected NeedsInput offering both, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1374,12 +1527,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_cluster_skips_when_kubeconfig_exists() {
+    async fn create_cluster_skips_only_when_completion_marker_exists() {
         let dir = temp_dir("create-skip");
-        // Pre-create the kubeconfig to simulate an already-provisioned cluster.
-        let auth = dir.join("cluster").join("auth");
-        std::fs::create_dir_all(&auth).unwrap();
-        std::fs::write(auth.join("kubeconfig"), "apiVersion: v1").unwrap();
+        // The completion marker — not a mere kubeconfig — is the idempotency
+        // signal (a kubeconfig appears during bootstrap, before completion).
+        let cluster = dir.join("cluster");
+        std::fs::create_dir_all(&cluster).unwrap();
+        std::fs::write(cluster.join(".wxd_install_complete"), "ok\n").unwrap();
 
         let runner = Arc::new(MockCommandRunner::new(vec![]));
         let ctx = ctx_with(
@@ -1394,6 +1548,31 @@ mod tests {
             runner.calls().is_empty(),
             "expected no commands on skip path, got {:?}",
             runner.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn create_cluster_resumes_when_started_but_not_complete() {
+        let dir = temp_dir("create-resume");
+        // Simulate an interrupted install: state + kubeconfig exist, but no
+        // completion marker. Must resume via wait-for, not re-run create.
+        let cluster = dir.join("cluster");
+        let auth = cluster.join("auth");
+        std::fs::create_dir_all(&auth).unwrap();
+        std::fs::write(cluster.join(".openshift_install_state.json"), "{}").unwrap();
+        std::fs::write(auth.join("kubeconfig"), "apiVersion: v1").unwrap();
+
+        let runner = Arc::new(MockCommandRunner::new(vec![]));
+        let ctx = ctx_with(runner.clone(), full_spec_inputs(), BTreeMap::new(), dir);
+        assert_eq!(CreateClusterStep::new().run(&ctx).await, StepOutcome::Completed);
+        let calls = runner.calls();
+        assert!(
+            calls.iter().any(|c| c.contains("wait-for install-complete")),
+            "expected wait-for resume, got {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.contains("create cluster")),
+            "must not re-run create cluster on resume, got {calls:?}"
         );
     }
 
