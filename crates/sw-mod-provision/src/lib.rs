@@ -561,10 +561,72 @@ impl Step for PreflightAwsStep {
             }
         }
 
+        // Validate the base domain is an existing *public* Route53 hosted zone —
+        // openshift-install needs one and otherwise fails ~30s in. Catching it
+        // here lists the user's actual zones so they can pick a valid one.
+        if let Some(base) = ctx.input("base_domain").filter(|d| !d.is_empty()) {
+            let base = base.trim_end_matches('.').to_string();
+            ctx.log(format!("preflight: Route53 public hosted zone for {base}"));
+            let args = vec!["route53".into(), "list-hosted-zones".into(), "--output".into(), "json".into()];
+            match runner.run_with_env("aws", &args, &env).await {
+                Ok(o) if o.success() => {
+                    let zones = parse_public_zones(&o.stdout);
+                    let want = format!("{base}.");
+                    if !zones.iter().any(|z| z == &want) {
+                        let available: Vec<String> =
+                            zones.iter().map(|z| z.trim_end_matches('.').to_string()).collect();
+                        let listing = if available.is_empty() {
+                            "(no public hosted zones found in this account)".to_string()
+                        } else {
+                            available.join(", ")
+                        };
+                        return StepOutcome::Failed {
+                            error: format!(
+                                "'{base}' is not a public Route53 hosted zone in this account"
+                            ),
+                            next_steps: vec![
+                                format!("Use one of your existing public hosted zones as the base domain: {listing}"),
+                                format!("…or create a public Route53 hosted zone for '{base}' and delegate the domain to its name servers, then retry."),
+                            ],
+                        };
+                    }
+                    ctx.log(format!("base domain '{base}' resolves to a public hosted zone"));
+                }
+                // Couldn't list zones (e.g. limited IAM) — warn, don't hard-block.
+                Ok(o) => ctx.log(format!(
+                    "warning: could not verify Route53 zones (exit {}): {}",
+                    o.status,
+                    o.stderr.trim()
+                )),
+                Err(e) => ctx.log(format!("warning: could not run aws route53: {e}")),
+            }
+        }
+
         ctx.log("preflight passed");
         ctx.progress(100);
         StepOutcome::Completed
     }
+}
+
+/// Extract the names of **public** hosted zones from `aws route53
+/// list-hosted-zones --output json` output (trailing-dot names, e.g.
+/// `example.com.`).
+fn parse_public_zones(json: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.get("HostedZones").and_then(|h| h.as_array()).cloned())
+        .map(|arr| {
+            arr.iter()
+                .filter(|z| {
+                    z.get("Config")
+                        .and_then(|c| c.get("PrivateZone"))
+                        .and_then(|p| p.as_bool())
+                        == Some(false)
+                })
+                .filter_map(|z| z.get("Name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Step 3: render and write `install-config.yaml` into the cluster dir.
@@ -856,6 +918,40 @@ mod tests {
     }
 
     #[test]
+    fn parse_public_zones_filters_private() {
+        let json = r#"{"HostedZones":[
+            {"Name":"ocpcpdtest.com.","Config":{"PrivateZone":false}},
+            {"Name":"internal.example.","Config":{"PrivateZone":true}},
+            {"Name":"ibm-cpd-partnerships.com.","Config":{"PrivateZone":false}}
+        ]}"#;
+        let zones = parse_public_zones(json);
+        assert_eq!(zones, vec!["ocpcpdtest.com.".to_string(), "ibm-cpd-partnerships.com.".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_base_domain_not_a_public_zone() {
+        let dir = temp_dir("preflight-zone");
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            MockResponse::ok("openshift-install version", "4.22"),
+            MockResponse::ok("aws --version", "aws-cli/2"),
+            MockResponse::ok("sts get-caller-identity", "{}"),
+            MockResponse::ok(
+                "route53 list-hosted-zones",
+                r#"{"HostedZones":[{"Name":"ocpcpdtest.com.","Config":{"PrivateZone":false}}]}"#,
+            ),
+        ]));
+        // full_spec_inputs uses base_domain=example.com, which isn't in the list.
+        let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir);
+        match PreflightAwsStep.run(&ctx).await {
+            StepOutcome::Failed { error, next_steps } => {
+                assert!(error.contains("public Route53 hosted zone"), "{error}");
+                assert!(next_steps.iter().any(|s| s.contains("ocpcpdtest.com")));
+            }
+            o => panic!("expected Failed for bad base domain, got {o:?}"),
+        }
+    }
+
+    #[test]
     fn cluster_name_validation() {
         assert!(is_valid_cluster_name("wxd"));
         assert!(is_valid_cluster_name("sw-wxd-install-prac-auto1"));
@@ -969,7 +1065,12 @@ mod tests {
     #[tokio::test]
     async fn preflight_passes_when_all_ok() {
         let dir = temp_dir("preflight-ok");
-        let runner = Arc::new(MockCommandRunner::new(vec![])); // all default-success
+        // base_domain in full_spec_inputs() is example.com — the Route53 list
+        // must report it as a public zone for preflight to pass.
+        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::ok(
+            "route53 list-hosted-zones",
+            r#"{"HostedZones":[{"Name":"example.com.","Config":{"PrivateZone":false}}]}"#,
+        )]));
         let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir);
         assert_eq!(PreflightAwsStep.run(&ctx).await, StepOutcome::Completed);
     }
