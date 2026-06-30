@@ -45,6 +45,15 @@
     <section class="panel" id="control-panel" aria-labelledby="control-title">
       <h2 id="control-title">Install run</h2>
       <p class="muted" id="run-meta">No run yet.</p>
+      <div id="resume-run" class="resume-run" hidden>
+        <label for="runs-select">Resume a previous run</label>
+        <div class="resume-row">
+          <select id="runs-select" aria-label="Previous runs"></select>
+          <button id="resume-run-btn" class="ghost" type="button">Re-attach</button>
+          <button id="runs-refresh-btn" class="ghost" type="button" title="Refresh the list">↻</button>
+        </div>
+        <p class="muted small">Pick a run to reconnect to its live log and progress (runs persist under <code>~/.wxd/runs/</code>).</p>
+      </div>
       <fieldset id="mode-select" class="mode-select">
         <legend>How do you want to start?</legend>
         <label><input type="radio" name="mode" value="provision" checked />

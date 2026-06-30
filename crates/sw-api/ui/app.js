@@ -385,6 +385,46 @@ async function refreshRun() {
   }
 }
 
+// ---- resume a previous run ------------------------------------------------
+// Re-attach the UI to an existing run: clear the log, reconnect the event
+// stream (which replays the persisted live log), and re-render its state.
+async function attachToRun(id) {
+  if (!id) return;
+  currentRunId = id;
+  $("#log").textContent = "";
+  connectEvents(id); // replays persisted events, incl. the live log
+  await refreshRun();
+  banner("info", `Re-attached to run ${id.slice(0, 8)} — live log restored below.`);
+}
+
+// Populate the "Resume a previous run" dropdown from the run store.
+async function loadRuns() {
+  const wrap = $("#resume-run");
+  const sel = $("#runs-select");
+  try {
+    const runs = await api("/runs");
+    if (!runs.length) {
+      wrap.hidden = true;
+      return;
+    }
+    clear(sel);
+    // Newest first (the store lists by id; keep server order, newest appended).
+    for (const r of [...runs].reverse()) {
+      const label = `${r.id.slice(0, 8)} · ${r.mode} · ${r.status}`;
+      sel.appendChild(el("option", { text: label, attrs: { value: r.id } }));
+    }
+    wrap.hidden = false;
+  } catch {
+    wrap.hidden = true; // listing is best-effort
+  }
+}
+
+$("#resume-run-btn").addEventListener("click", () => {
+  const id = $("#runs-select").value;
+  if (id) attachToRun(id);
+});
+$("#runs-refresh-btn").addEventListener("click", loadRuns);
+
 // ---- live events ----------------------------------------------------------
 function connectEvents(id) {
   if (eventSource) eventSource.close();
@@ -479,6 +519,7 @@ $("#start-btn").addEventListener("click", async () => {
     );
     connectEvents(run.id);
     renderRun(run);
+    loadRuns(); // make the new run available in the resume list
   } catch (e) {
     banner("fail", `Could not start: ${e.message}`);
   }
@@ -528,3 +569,4 @@ $("#destroy-btn").addEventListener("click", async () => {
 loadPrereqs();
 loadCatalog().then(applyMode);
 applyMode();
+loadRuns();
