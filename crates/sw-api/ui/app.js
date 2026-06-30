@@ -108,6 +108,13 @@ async function renderProvisionSpec(provider) {
     // Spec fields with no default must be supplied (except known-optional ones).
     const OPTIONAL = new Set(["resource_tags", "ssh_key"]);
     for (const f of fields) {
+      // Boolean fields (default "true"/"false") render as a checkbox.
+      if (f.default === "true" || f.default === "false") {
+        const cb = el("input", { attrs: { type: "checkbox", "data-provision-input": f.key } });
+        cb.checked = f.default === "true";
+        form.appendChild(el("label", { class: "check" }, [cb, el("span", { text: f.label })]));
+        continue;
+      }
       const required = f.default == null && !OPTIONAL.has(f.key);
       const attrs = { type: f.secret ? "password" : "text", "data-provision-input": f.key, autocomplete: "off" };
       if (required) attrs.required = "required";
@@ -448,6 +455,10 @@ $("#start-btn").addEventListener("click", async () => {
         return;
       }
       for (const i of pf.querySelectorAll("input[data-provision-input]")) {
+        if (i.type === "checkbox") {
+          inputs[i.dataset.provisionInput] = i.checked ? "true" : "false";
+          continue;
+        }
         const v = i.value.trim();
         if (v) inputs[i.dataset.provisionInput] = v;
       }
