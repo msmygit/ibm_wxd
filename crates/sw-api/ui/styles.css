@@ -211,6 +211,23 @@ button.ghost { background: transparent; }
 .pr-name { font-weight: 500; }
 .pr-detail { font-size: 12px; text-align: right; }
 
+/* Collapsed state: all prerequisites present — show only the green banner
+   (plus a small Re-check), with a green boundary. */
+#prereqs-panel.collapsed {
+  border-color: var(--ok);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#prereqs-panel.collapsed > p.muted,
+#prereqs-panel.collapsed > #prereqs-list,
+#prereqs-panel.collapsed > .actions #prereqs-install-btn {
+  display: none;
+}
+#prereqs-panel.collapsed > h2 { order: 0; }
+#prereqs-panel.collapsed > #prereqs-banner { order: 1; margin: 0; }
+#prereqs-panel.collapsed > .actions { order: 2; margin: 0; }
+
 /* Credentials: hide non-selected provider groups */
 .cred-group[hidden] { display: none; }
 

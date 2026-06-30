@@ -227,6 +227,8 @@ function renderPrereqs(list) {
     ul.appendChild(el("li", { class: "pr-row" }, [badge, name, detail]));
   }
   $("#prereqs-install-btn").disabled = !anyMissing;
+  // Collapse the panel to a single green line when nothing is missing.
+  $("#prereqs-panel").classList.toggle("collapsed", !anyMissing);
   return anyMissing;
 }
 
