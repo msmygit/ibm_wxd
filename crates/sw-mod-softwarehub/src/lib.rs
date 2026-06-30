@@ -121,9 +121,9 @@ impl Step for AddEntitlement {
         let args = vec![
             "manage".into(),
             "add-icr-cred-to-global-pull-secret".into(),
-            format!("--entitled-registry-key={key}"),
+            format!("--entitled_registry_key={key}"),
         ];
-        match ctx.run_in_cluster("cpd-cli", &args).await {
+        match ctx.run_in_cluster_pty("cpd-cli", &args).await {
             Ok(o) if o.success() => {
                 ctx.log("entitled registry credential applied (nodes roll to pick it up if it changed)");
                 ctx.progress(100);
@@ -183,7 +183,7 @@ impl Step for InstallOperators {
             format!("--release={version}"),
             format!("--cpd_operator_ns={operators_ns}"),
         ];
-        match ctx.run_in_cluster("cpd-cli", &args).await {
+        match ctx.run_in_cluster_pty("cpd-cli", &args).await {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
@@ -244,7 +244,7 @@ impl Step for InstallControlPlane {
             format!("--block_storage_class={block_sc}"),
             format!("--file_storage_class={file_sc}"),
         ];
-        match ctx.run_in_cluster("cpd-cli", &args).await {
+        match ctx.run_in_cluster_pty("cpd-cli", &args).await {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed

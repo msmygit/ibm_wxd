@@ -150,6 +150,24 @@ impl StepContext {
             .await
     }
 
+    /// Like [`run_in_cluster`](Self::run_in_cluster) but runs the command under a
+    /// pseudo-TTY. `cpd-cli manage` execs into its olm-utils container with a TTY
+    /// (`docker exec -t`); when driven as a child process with no controlling
+    /// terminal it fails with "cannot attach stdin to a TTY-enabled container".
+    /// Wrapping in `script` allocates a PTY so it works headlessly. The live log
+    /// still shows the real command (`cpd-cli …`), not the `script` wrapper.
+    pub async fn run_in_cluster_pty(
+        &self,
+        program: &str,
+        args: &[String],
+    ) -> std::io::Result<CommandOutput> {
+        self.log(format!("$ {}", self.cmdline(program, args)));
+        let kc = self.kubeconfig_path().to_string_lossy().into_owned();
+        let env = [("KUBECONFIG".to_string(), kc)];
+        let (wrapped_program, wrapped_args) = pty_wrap(program, args);
+        self.runner.run_with_env(&wrapped_program, &wrapped_args, &env).await
+    }
+
     /// A non-secret input value collected earlier in the run.
     pub fn input(&self, key: &str) -> Option<&str> {
         self.inputs.get(key).map(String::as_str)
@@ -183,6 +201,32 @@ impl StepContext {
             status,
         });
     }
+}
+
+/// Wrap `program args…` in `script` so it runs under a pseudo-TTY. The two
+/// `script` dialects differ: BSD/macOS takes the command after the typescript
+/// file (`script -q /dev/null cmd args…`), util-linux takes it via `-c "<cmd>"`.
+fn pty_wrap(program: &str, args: &[String]) -> (String, Vec<String>) {
+    match std::env::consts::OS {
+        "macos" => {
+            let mut a = vec!["-q".to_string(), "/dev/null".to_string(), program.to_string()];
+            a.extend(args.iter().cloned());
+            ("script".to_string(), a)
+        }
+        _ => {
+            let cmd = std::iter::once(program.to_string())
+                .chain(args.iter().cloned())
+                .map(|s| shell_quote(&s))
+                .collect::<Vec<_>>()
+                .join(" ");
+            ("script".to_string(), vec!["-qec".to_string(), cmd, "/dev/null".to_string()])
+        }
+    }
+}
+
+/// Minimal POSIX single-quote shell escaping for building a `script -c` string.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// One idempotent, resumable unit of work.
@@ -312,6 +356,17 @@ mod tests {
         assert!(lines.iter().any(|l| l == "$ aws route53 list-hosted-zones"), "got {lines:?}");
         assert!(lines.iter().any(|l| l == "done"));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn pty_wrap_builds_a_script_invocation() {
+        let (prog, args) = pty_wrap("cpd-cli", &["manage".into(), "apply-olm".into()]);
+        assert_eq!(prog, "script");
+        // Both dialects invoke `script` and reference the real command + /dev/null.
+        let joined = args.join(" ");
+        assert!(joined.contains("cpd-cli"), "got {joined}");
+        assert!(joined.contains("apply-olm"), "got {joined}");
+        assert!(joined.contains("/dev/null"), "got {joined}");
     }
 
     #[tokio::test]

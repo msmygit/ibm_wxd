@@ -90,10 +90,13 @@ fn err500(e: impl std::fmt::Display) -> Response {
 // ---- run handlers ---------------------------------------------------------
 
 /// Seed a run's secret store from well-known credential files on the host, if
-/// present. Currently: `~/.ibm/IBM_CLOUD_API_KEY` → `IBM_ENTITLEMENT_KEY`.
+/// present. The IBM **entitled-registry** key (My IBM → Container software
+/// library) authenticates to `cp.icr.io`; it is NOT the IBM Cloud API key, so we
+/// only read a dedicated `~/.ibm/IBM_ENTITLEMENT_KEY` file (never the Cloud API
+/// key, which `cp.icr.io` rejects). A value entered in the UI always wins.
 fn preload_known_secrets(store: &sw_core::RunStore, id: &str) {
     let Some(home) = std::env::var_os("HOME") else { return };
-    let path = std::path::Path::new(&home).join(".ibm").join("IBM_CLOUD_API_KEY");
+    let path = std::path::Path::new(&home).join(".ibm").join("IBM_ENTITLEMENT_KEY");
     if let Ok(contents) = std::fs::read_to_string(&path) {
         let key = contents.trim().to_string();
         if !key.is_empty() {

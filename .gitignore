@@ -22,3 +22,6 @@ cpd_vars.sh
 
 # Agent worktrees (isolated subagent sandboxes)
 .claude/worktrees/
+
+# cpd-cli olm-utils workspace (created at runtime)
+cpd-cli-workspace/
