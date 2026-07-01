@@ -236,8 +236,15 @@ impl Step for ApplyComponentsStep {
         // a file (RWX) storage class. Defaults match a provisioned AWS cluster.
         let block_sc = ctx.input("block_storage_class").unwrap_or("gp3-csi").to_string();
         let file_sc = ctx.input("file_storage_class").unwrap_or("efs-sc").to_string();
-        // VERSION pins the olm-utils image cpd-cli uses (see softwarehub::cpd_env).
-        let mut cpd_env = vec![("VERSION".to_string(), version.clone())];
+        // cpd-cli manage env, per the IBM installation-variables script. VERSION
+        // pins the olm-utils image; PATCH_ID selects the patch; OPENSHIFT_TYPE/
+        // IMAGE_ARCH describe the cluster. Keep in sync with softwarehub::cpd_env.
+        let mut cpd_env = vec![
+            ("VERSION".to_string(), version.clone()),
+            ("PATCH_ID".to_string(), ctx.input("PATCH_ID").unwrap_or("latest").to_string()),
+            ("OPENSHIFT_TYPE".to_string(), ctx.input("OPENSHIFT_TYPE").unwrap_or("self-managed").to_string()),
+            ("IMAGE_ARCH".to_string(), ctx.input("IMAGE_ARCH").unwrap_or("amd64").to_string()),
+        ];
         if let Some(img) = ctx.input("OLM_UTILS_IMAGE").filter(|v| !v.is_empty()) {
             cpd_env.push(("OLM_UTILS_IMAGE".to_string(), img.to_string()));
         }

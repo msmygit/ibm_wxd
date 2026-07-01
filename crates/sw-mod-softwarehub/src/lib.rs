@@ -45,12 +45,19 @@ fn storage_classes(ctx: &StepContext) -> (String, String) {
     )
 }
 
-/// Environment for `cpd-cli manage`. `VERSION` pins the `olm-utils-v4` image the
-/// cpd-cli pulls — and therefore which Software Hub release is installable — so
-/// it must be exported on every `cpd-cli manage` call. `OLM_UTILS_IMAGE`
-/// optionally overrides the image (e.g. the Premium cartridge image).
+/// Environment for `cpd-cli manage`, per the IBM installation-variables script.
+/// `VERSION` pins the `olm-utils-v4` image (and thus the installable release);
+/// `PATCH_ID` selects the patch (`latest` by default); `OPENSHIFT_TYPE`/
+/// `IMAGE_ARCH` describe the cluster. `OLM_UTILS_IMAGE` optionally overrides the
+/// image (e.g. the Premium cartridge image); by default cpd-cli derives it from
+/// `VERSION` (`icr.io/cpopen/cpd/olm-utils-v4:${VERSION}`).
 pub fn cpd_env(ctx: &StepContext) -> Vec<(String, String)> {
-    let mut env = vec![("VERSION".to_string(), version(ctx))];
+    let mut env = vec![
+        ("VERSION".to_string(), version(ctx)),
+        ("PATCH_ID".to_string(), input_or(ctx, "PATCH_ID", "latest")),
+        ("OPENSHIFT_TYPE".to_string(), input_or(ctx, "OPENSHIFT_TYPE", "self-managed")),
+        ("IMAGE_ARCH".to_string(), input_or(ctx, "IMAGE_ARCH", "amd64")),
+    ];
     if let Some(img) = ctx.input("OLM_UTILS_IMAGE").filter(|v| !v.is_empty()) {
         env.push(("OLM_UTILS_IMAGE".to_string(), img.to_string()));
     }
