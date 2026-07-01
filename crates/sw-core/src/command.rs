@@ -18,6 +18,36 @@ impl CommandOutput {
     pub fn success(&self) -> bool {
         self.status == 0
     }
+
+    /// Best-effort diagnostic text for a failed command.
+    ///
+    /// Plain runs put errors on `stderr`, but PTY-wrapped runs (via `script`,
+    /// used for every `cpd-cli manage` call) merge the child's stderr into
+    /// stdout — so `stderr` is empty and the real error is in `stdout`. Prefer
+    /// `stderr` when present; otherwise fall back to the tail of `stdout` so the
+    /// operator sees the actual failure instead of a blank message. Returns a
+    /// placeholder when the command produced no output at all.
+    pub fn diagnostic(&self) -> String {
+        let stderr = self.stderr.trim();
+        if !stderr.is_empty() {
+            return stderr.to_string();
+        }
+        let tail = tail_lines(self.stdout.trim(), 20);
+        if tail.is_empty() {
+            "(no output; the command exited non-zero without emitting an error message)".to_string()
+        } else {
+            tail
+        }
+    }
+}
+
+/// Return the last `n` non-empty lines of `text`, joined by newlines. Used to
+/// keep failure messages focused on the tail of a long PTY log where the actual
+/// error lives.
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
 }
 
 /// Abstraction over running external programs. Implementors must be `Send + Sync`
@@ -168,6 +198,32 @@ impl CommandRunner for MockCommandRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn out(status: i32, stdout: &str, stderr: &str) -> CommandOutput {
+        CommandOutput { status, stdout: stdout.into(), stderr: stderr.into() }
+    }
+
+    #[test]
+    fn diagnostic_prefers_stderr_when_present() {
+        // Plain (non-PTY) runs put the error on stderr.
+        assert_eq!(out(1, "some stdout noise", "  real error\n").diagnostic(), "real error");
+    }
+
+    #[test]
+    fn diagnostic_falls_back_to_stdout_tail_for_pty_runs() {
+        // PTY runs (script) merge stderr into stdout, leaving stderr empty; the
+        // real error is the tail of stdout — that's what must surface.
+        let long = (1..=30).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let d = out(1, &long, "").diagnostic();
+        assert!(d.starts_with("line 11"), "kept last 20 lines: {d}");
+        assert!(d.ends_with("line 30"));
+        assert!(!d.contains("line 10"));
+    }
+
+    #[test]
+    fn diagnostic_placeholder_when_no_output() {
+        assert!(out(1, "  \n", "").diagnostic().starts_with("(no output"));
+    }
 
     #[tokio::test]
     async fn mock_matches_by_substring_and_records_calls() {

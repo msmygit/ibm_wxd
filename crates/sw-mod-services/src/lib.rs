@@ -292,7 +292,7 @@ impl Step for ClusterResourcesStep {
             Ok(o) if o.success() => {}
             Ok(o) => {
                 return StepOutcome::Failed {
-                    error: format!("case-download (cluster resources) failed (exit {}): {}", o.status, o.stderr.trim()),
+                    error: format!("case-download (cluster resources) failed (exit {}): {}", o.status, o.diagnostic()),
                     next_steps: vec!["Confirm network access to the IBM CASE repository, then retry.".into()],
                 }
             }
@@ -316,7 +316,7 @@ impl Step for ClusterResourcesStep {
                 StepOutcome::Completed
             }
             Ok(o) => StepOutcome::Failed {
-                error: format!("oc apply (cluster resources) failed (exit {}): {}", o.status, o.stderr.trim()),
+                error: format!("oc apply (cluster resources) failed (exit {}): {}", o.status, o.diagnostic()),
                 next_steps: vec!["Ensure cluster-admin access and that cluster_scoped_resources.yaml was generated, then retry.".into()],
             },
             Err(e) => StepOutcome::Failed {
@@ -362,7 +362,7 @@ impl Step for ApplyComponentsStep {
             Ok(o) if o.success() => {}
             Ok(o) => {
                 return StepOutcome::Failed {
-                    error: format!("case-download for services failed (exit {}): {}", o.status, o.stderr.trim()),
+                    error: format!("case-download for services failed (exit {}): {}", o.status, o.diagnostic()),
                     next_steps: vec!["Confirm network access to the IBM CASE repository, then retry.".into()],
                 }
             }
@@ -403,7 +403,7 @@ impl Step for ApplyComponentsStep {
                 StepOutcome::Completed
             }
             Ok(o) => StepOutcome::Failed {
-                error: format!("install-components for services failed (exit {}): {}", o.status, o.stderr.trim()),
+                error: format!("install-components for services failed (exit {}): {}", o.status, o.diagnostic()),
                 next_steps: vec![
                     "Confirm the entitlement key, storage classes, and component ids, then retry.".into(),
                     format!("Inspect operand status: oc get ZenService -n {inst_ns}"),
