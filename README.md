@@ -6,11 +6,15 @@ cloud provider (AWS today; IBM Cloud / Azure / GCP behind the same interface),
 stand up **IBM Software Hub / Cloud Pak for Data 5.4.x** (latest: 5.4.0,
 `PATCH_ID=latest`), then add watsonx.data (and other entitled services) — with a
 simple **no-build web UI** (light/dark) showing live status, a progress tracker,
-clear next steps, error capture, and **pause/resume/retry**. See the
-**[Roadmap](#roadmap)** for status and issue
-[#1](https://github.com/msmygit/ibm_wxd/issues/1).
+clear next steps, error capture, **pause/resume/retry**, and an access-details
+panel with the cluster URLs + credentials when it's done.
 
-Docs: <https://www.ibm.com/docs/en/software-hub/5.4.x>
+- **How it works:** [`docs/architecture.md`](docs/architecture.md) — layers, the
+  orchestrator/state-machine, resume model, and the extension seams (with diagrams).
+- **Status & plans:** [`docs/roadmap.md`](docs/roadmap.md) · tracking issue
+  [#1](https://github.com/msmygit/ibm_wxd/issues/1).
+- **Operator walkthrough:** [`docs/running-the-installer.md`](docs/running-the-installer.md).
+- **IBM product docs:** <https://www.ibm.com/docs/en/software-hub/5.4.x>
 
 ## Run the installer
 
@@ -36,28 +40,41 @@ GCP), or leave them blank to fall back to `~/.aws/credentials` and
 you provide. Full walkthrough: **[Running the installer guide](docs/running-the-installer.md)**.
 All tests are hermetic (no cloud spend): `cargo test --workspace`.
 
-## Status
+## Crate map
 
-The installer is a **Cargo workspace** (binary: `wxd`). Generic IBM Software Hub
-infrastructure is prefixed `sw-*`; watsonx.data-specific code is `wxd-*`:
+The installer is a **Cargo workspace** (the web server binary is `wxd`, in
+`sw-api`). Generic IBM Software Hub infrastructure is prefixed `sw-*`;
+watsonx.data-specific code is `wxd-*`. See
+[`docs/architecture.md`](docs/architecture.md) for how these fit together.
 
 - **`sw-core`** — orchestrator spine: Module/Step framework, run state machine
   with pause/resume/retry, event bus → SSE, `CommandRunner` seam (no module
   calls `std::process`), run store under `~/.wxd`.
 - **`sw-api`** — axum web server (OpenAPI 3.1.0 REST + SSE), serves the no-build
-  UI, binds 127.0.0.1 with a session token.
+  UI, binds 127.0.0.1 with a session token. Binary: `wxd`.
 - **`sw-mod-prereqs`** — auto-installs `oc` / `helm` / `openshift-install` /
   `cpd-cli` into `~/.wxd/bin`.
-- **`sw-mod-existing`** — adopt an existing cluster via kubeconfig (mode `existing`).
 - **`sw-mod-provision`** — `Provisioner` trait + `AwsProvisioner`
-  (`openshift-install` IPI), tags every resource with your name.
-- **`sw-mod-softwarehub`** — IBM Software Hub 5.4.0 (operators → control plane →
-  readiness).
-- **`sw-mod-services`** + **`wxd-svc-watsonxdata`** — service framework +
-  watsonx.data installer (default service).
-- **`wxd-config`** — the original `cpd_vars.sh` generator (below), still shipped.
+  (`openshift-install` IPI); tags every resource with your name; configurable
+  instance types, counts, and root-disk sizes.
+- **`sw-mod-storage`** — RWX (file) storage: AWS EFS + the EFS CSI operator,
+  creating the `efs-sc` storage class that Software Hub / watsonx.data require.
+- **`sw-mod-softwarehub`** — IBM Software Hub 5.4.x (login → entitlement →
+  cert-manager → namespaces → License Service → cluster-scoped resources →
+  control plane → readiness).
+- **`sw-mod-services`** — the generic, catalog-driven `ComponentsModule` (installs
+  any selected entitled components) plus the `ServiceInstaller` trait.
+- **`wxd-svc-watsonxdata`** — the reference `ServiceInstaller` implementation for
+  watsonx.data (example of the bespoke-installer path).
+- **`sw-mod-existing`** — adopt an existing cluster via kubeconfig (mode `existing`).
+- **`wxd-config`** — the original `cpd_vars.sh` generator CLI (below), still shipped.
 
-## Getting started
+## `wxd-config` (legacy config-generator CLI)
+
+> The **web installer** above (`cargo run -p sw-api --bin wxd`) is the primary
+> tool and does everything end to end. The `wxd-config` CLI below is the original,
+> still-shipped utility that only **generates a `cpd_vars.sh`** for the manual IBM
+> install steps — useful if you drive `cpd-cli` yourself.
 
 ### Prerequisites
 
@@ -70,21 +87,25 @@ infrastructure is prefixed `sw-*`; watsonx.data-specific code is `wxd-*`:
 # 1. Make sure cargo is on your PATH (Homebrew Rust):
 export PATH="/usr/local/opt/rust/bin:$PATH"
 
-# 2. From the repo root, build and run the tests:
-cargo build
-cargo test
+# 2. From the repo root, build and run the tests (the root is a virtual
+#    workspace manifest — always target a specific crate/binary):
+cargo build --workspace
+cargo test --workspace
 
-# 3. Run it directly without installing:
-cargo run -- --help
+# 3. Run the web installer (primary entry point):
+cargo run -p sw-api --bin wxd     # binds 127.0.0.1, prints a tokenized URL
 
-# 4. Or install the `wxd-config` command onto your PATH (~/.cargo/bin):
-cargo install --path .
+# 4. Or use the legacy config CLI directly:
+cargo run -p wxd-config -- --help
 
-# 5. Make ~/.cargo/bin available in every new terminal (one-time):
+# 5. Install the `wxd-config` command onto your PATH (~/.cargo/bin):
+cargo install --path crates/wxd-config
+
+# 6. Make ~/.cargo/bin available in every new terminal (one-time):
 echo 'export PATH="/usr/local/opt/rust/bin:$HOME/.cargo/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 
-# 6. Now the command is available:
+# 7. Now the command is available:
 wxd-config --help
 ```
 
@@ -213,24 +234,19 @@ Software Hub 5.4.x requires all three on `PATH`:
 
 `wxd-config` itself needs none of these — only a Rust toolchain to build.
 
-## Roadmap
+## Roadmap & extending the tool
 
-The goal is a true plug-n-play, end-to-end experience. Increments:
-
-| # | Module | Status |
-|---|---|---|
-| 1 | **Config generation** (`wxd-config` → `cpd_vars.sh`) | ✅ shipped |
-| 2 | **AWS OpenShift cluster provisioning** (control plane + workers; extensible to other clouds) | ✅ shipped (`sw-mod-provision`) |
-| 3 | **IBM Software Hub install** (operators → control plane → readiness) | ✅ shipped (`sw-mod-softwarehub`) |
-| 4 | **Service framework + watsonx.data add-on** (extensible to other services) | ✅ shipped (`sw-mod-services` + `wxd-svc-watsonxdata`) |
-| 5 | **Web UI** — live status, progress tracker, next steps, error capture, **pause/resume/retry** | ✅ shipped (no-build UI, light/dark) |
-| 6 | **Existing-cluster path** (skip provisioning, install onto a cluster you already have) | ✅ shipped (`sw-mod-existing`, run mode `existing`) |
-| 7 | **Cloud resource tagging** — user-provided name tags every created resource (AWS `userTags`; same input flows to other clouds) | ✅ shipped |
-| 8 | **Prerequisite auto-install** (`oc`/`helm`/`openshift-install`/`cpd-cli` into `~/.wxd/bin`) + UI credential entry (AWS/IBM/Azure/GCP) | ✅ shipped (`sw-mod-prereqs`) |
-| 9 | Other clouds (IBM Cloud / Azure / GCP) as working provisioners + other entitled IBM services | ⏳ planned |
+The full increment table lives in **[`docs/roadmap.md`](docs/roadmap.md)**.
+Short version: increments 1–9 are shipped (config gen, AWS provisioning, Software
+Hub install, RWX storage, service framework + watsonx.data, web UI,
+existing-cluster path, prerequisite auto-install, DNS/unattended robustness);
+other clouds and more entitled services are planned/ongoing.
 
 The orchestrator + web server are generic IBM Software Hub infrastructure
-(`sw-*`); only watsonx.data-specific code is `wxd-*`, so other entitled IBM
-services plug in behind the same `ServiceInstaller` trait. Design lives under
-`docs/superpowers/specs/`; the end-to-end run guide is
-[`docs/running-the-installer.md`](docs/running-the-installer.md).
+(`sw-*`); only watsonx.data-specific code is `wxd-*`. The tool is built to extend
+at **three seams** — a `Module`/`Step`, a `Provisioner` (new cloud), or a
+`ServiceInstaller` / catalog entry (new service) — none of which touch the
+orchestrator. See [`docs/architecture.md`](docs/architecture.md) (§12) for the
+design and [`docs/extending.md`](docs/extending.md) for copy-pasteable worked
+examples, plus `AGENTS.md` for AI-agent onboarding. Design specs live under
+`docs/superpowers/specs/`.
