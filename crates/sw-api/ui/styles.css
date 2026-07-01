@@ -255,6 +255,16 @@ button.ghost { background: transparent; }
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 30%, transparent);
 }
 
+/* Cluster spec: subtly dim + flag it while locked during an active run. */
+#provision-panel.readonly { opacity: 0.7; }
+#provision-panel.readonly::after {
+  content: "🔒 Locked while the install is running.";
+  display: block;
+  margin-top: 10px;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
 /* Credentials: hide non-selected provider groups */
 .cred-group[hidden] { display: none; }
 

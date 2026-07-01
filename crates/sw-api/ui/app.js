@@ -166,6 +166,29 @@ async function renderProvisionSpec(provider) {
   }
 }
 
+// Lock/unlock the whole cluster-spec catalog while a run is active, so the user
+// can't tweak values mid-run (which would have no effect). Disables the spec
+// inputs, the OpenShift version select + its custom text box, the cloud-provider
+// radios and the services checkboxes, and adds a subtle "locked" visual cue.
+function setProvisionSpecReadonly(readonly) {
+  const panel = $("#provision-panel");
+  const form = $("#provision-form");
+  if (form) {
+    for (const field of form.querySelectorAll("input, select")) {
+      field.disabled = readonly;
+    }
+  }
+  for (const radio of document.querySelectorAll("#hyperscalers input")) {
+    // Never re-enable a provider that is disabled because it's "coming soon".
+    if (readonly) radio.disabled = true;
+    else if (!radio.dataset.comingSoon) radio.disabled = false;
+  }
+  for (const cb of document.querySelectorAll('#services input[type="checkbox"]')) {
+    cb.disabled = readonly;
+  }
+  if (panel) panel.classList.toggle("readonly", readonly);
+}
+
 async function loadCatalog() {
   try {
     const [hs, svcs] = await Promise.all([
@@ -180,7 +203,10 @@ async function loadCatalog() {
       const radio = el("input", {
         attrs: { type: "radio", name: "hyperscaler", value: h.id },
       });
-      if (!h.enabled) radio.disabled = true;
+      if (!h.enabled) {
+        radio.disabled = true;
+        radio.dataset.comingSoon = "1";
+      }
       if (h.enabled && firstEnabled === null) {
         firstEnabled = h.id;
         radio.checked = true;
@@ -382,6 +408,21 @@ function renderRun(run) {
   if (run.status === "completed") banner("ok", "Install completed.");
   else if (run.status === "failed") banner("fail", "A step failed — see the error and retry.");
   else if (run.status === "paused") banner("info", "Paused. Resume when ready.");
+
+  // Lock the cluster spec while the run is active so the user can't change
+  // values mid-run (they'd have no effect). Unlock only when the run failed at
+  // the cluster-spec step itself, so they can correct the spec and retry; any
+  // other failure keeps it locked (the cluster is already being built and the
+  // spec shouldn't change).
+  const active = ["running", "awaiting_input", "paused"].includes(run.status);
+  const specStepNeedsEdit = run.steps.some(
+    (s) =>
+      s.id === "mod-provision/cluster-spec" &&
+      ["failed", "awaiting_input"].includes(s.status)
+  );
+  if (specStepNeedsEdit) setProvisionSpecReadonly(false);
+  else if (active || run.status === "failed") setProvisionSpecReadonly(true);
+  else setProvisionSpecReadonly(false);
 }
 
 function renderInputForm(run) {
@@ -542,6 +583,8 @@ function resetRunView() {
   for (const id of ["#pause-btn", "#resume-btn", "#retry-btn", "#destroy-btn"]) {
     $(id).disabled = true;
   }
+  // Fresh start / re-attach reset: the cluster spec is editable again.
+  setProvisionSpecReadonly(false);
 }
 
 $("#start-btn").addEventListener("click", async () => {
@@ -607,6 +650,8 @@ $("#start-btn").addEventListener("click", async () => {
         ? "Install started against your existing cluster."
         : "Install started — provisioning a new AWS cluster."
     );
+    // Run created: lock the cluster spec so it can't be edited mid-run.
+    setProvisionSpecReadonly(true);
     connectEvents(run.id);
     renderRun(run);
     loadRuns(); // make the new run available in the resume list
