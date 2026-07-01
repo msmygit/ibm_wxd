@@ -187,6 +187,34 @@ fn operands_ns(ctx: &StepContext) -> String {
     ctx.input("PROJECT_CPD_INST_OPERANDS").unwrap_or("cpd-instance").to_string()
 }
 
+fn service_version(ctx: &StepContext) -> String {
+    ctx.input("VERSION").unwrap_or("5.4.0").to_string()
+}
+
+fn service_patch_id(ctx: &StepContext) -> String {
+    ctx.input("PATCH_ID").unwrap_or("latest").to_string()
+}
+
+/// The `cpd-cli manage` environment for service installs, per the IBM
+/// installation-variables script. `OLM_UTILS_IMAGE` must be set explicitly —
+/// `VERSION` alone doesn't switch the olm-utils image cpd-cli uses. Keep in sync
+/// with softwarehub::cpd_env.
+fn services_cpd_env(ctx: &StepContext) -> Vec<(String, String)> {
+    let version = service_version(ctx);
+    let olm_image = ctx
+        .input("OLM_UTILS_IMAGE")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("icr.io/cpopen/cpd/olm-utils-v4:{version}"));
+    vec![
+        ("VERSION".to_string(), version),
+        ("PATCH_ID".to_string(), service_patch_id(ctx)),
+        ("OPENSHIFT_TYPE".to_string(), ctx.input("OPENSHIFT_TYPE").unwrap_or("self-managed").to_string()),
+        ("IMAGE_ARCH".to_string(), ctx.input("IMAGE_ARCH").unwrap_or("amd64").to_string()),
+        ("OLM_UTILS_IMAGE".to_string(), olm_image),
+    ]
+}
+
 impl Module for ComponentsModule {
     fn id(&self) -> &str {
         "mod-services"
@@ -197,6 +225,7 @@ impl Module for ComponentsModule {
     fn steps(&self) -> Vec<Box<dyn Step>> {
         vec![
             Box::new(SelectComponentsStep),
+            Box::new(ClusterResourcesStep),
             Box::new(ApplyComponentsStep),
             Box::new(VerifyComponentsStep),
         ]
@@ -218,6 +247,80 @@ impl Step for SelectComponentsStep {
     }
 }
 
+/// Generate and apply the cluster-scoped resources (CRDs, ClusterRoles,
+/// webhooks) for the selected services BEFORE `install-components`.
+///
+/// `cpd-cli manage case-download --cluster_resources=true` produces an
+/// aggregated `cluster_scoped_resources.yaml` covering the selected component(s)
+/// AND every dependency CASE (e.g. watsonx.data pulls in ibm-cloud-native-
+/// postgresql, ibm-opensearch-operator, ibm-analyticsengine, ibm-ccs). Without
+/// these CRDs, the bundled operators CrashLoop (`no matches for kind "Cluster"`)
+/// and helm `lookup` calls in the CR charts fail — so `install-components`
+/// deadlocks waiting for operator deployments that can never become ready. This
+/// mirrors the platform's `instance-cluster-resources` step.
+struct ClusterResourcesStep;
+#[async_trait]
+impl Step for ClusterResourcesStep {
+    fn id(&self) -> &str {
+        "services-cluster-resources"
+    }
+    fn title(&self) -> &str {
+        "Cluster resources: selected services"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        let components = selected_components(ctx);
+        let version = service_version(ctx);
+        let patch_id = service_patch_id(ctx);
+        let env = services_cpd_env(ctx);
+
+        ctx.log(format!("generating cluster-scoped resources (CRDs) for [{components}]"));
+        let dl = vec![
+            "manage".into(),
+            "case-download".into(),
+            format!("--release={version}"),
+            format!("--patch_id={patch_id}"),
+            format!("--components={components}"),
+            "--cluster_resources=true".into(),
+        ];
+        match ctx.run_in_cluster_pty_env("cpd-cli", &dl, &env, &[]).await {
+            Ok(o) if o.success() => {}
+            Ok(o) => {
+                return StepOutcome::Failed {
+                    error: format!("case-download (cluster resources) failed (exit {}): {}", o.status, o.stderr.trim()),
+                    next_steps: vec!["Confirm network access to the IBM CASE repository, then retry.".into()],
+                }
+            }
+            Err(e) => {
+                return StepOutcome::Failed {
+                    error: format!("could not run cpd-cli: {e}"),
+                    next_steps: vec!["Ensure cpd-cli is installed (Prerequisites), then retry.".into()],
+                }
+            }
+        }
+
+        // cpd-cli writes cluster_scoped_resources.yaml under its workspace `work`
+        // dir; apply it server-side (CRDs + cluster RBAC), per the docs.
+        let script = "set -e; F=$(find cpd-cli-workspace -name cluster_scoped_resources.yaml 2>/dev/null | head -1); \
+                      test -n \"$F\"; oc apply -f \"$F\" --server-side --force-conflicts"
+            .to_string();
+        ctx.log("applying cluster-scoped resources (server-side)");
+        match ctx.run_in_cluster("sh", &["-c".to_string(), script]).await {
+            Ok(o) if o.success() => {
+                ctx.progress(100);
+                StepOutcome::Completed
+            }
+            Ok(o) => StepOutcome::Failed {
+                error: format!("oc apply (cluster resources) failed (exit {}): {}", o.status, o.stderr.trim()),
+                next_steps: vec!["Ensure cluster-admin access and that cluster_scoped_resources.yaml was generated, then retry.".into()],
+            },
+            Err(e) => StepOutcome::Failed {
+                error: format!("could not run oc: {e}"),
+                next_steps: vec!["Ensure `oc` has an active cluster session, then retry.".into()],
+            },
+        }
+    }
+}
+
 struct ApplyComponentsStep;
 #[async_trait]
 impl Step for ApplyComponentsStep {
@@ -231,29 +334,13 @@ impl Step for ApplyComponentsStep {
         let components = selected_components(ctx);
         let op_ns = ctx.input("PROJECT_CPD_INST_OPERATORS").unwrap_or("cpd-operators").to_string();
         let inst_ns = operands_ns(ctx);
-        let version = ctx.input("VERSION").unwrap_or("5.4.0").to_string();
-        let patch_id = ctx.input("PATCH_ID").unwrap_or("latest").to_string();
+        let version = service_version(ctx);
+        let patch_id = service_patch_id(ctx);
         // Software Hub services (watsonx.data et al.) need both a block (RWO) and
         // a file (RWX) storage class. Defaults match a provisioned AWS cluster.
         let block_sc = ctx.input("block_storage_class").unwrap_or("gp3-csi").to_string();
         let file_sc = ctx.input("file_storage_class").unwrap_or("efs-sc").to_string();
-        // cpd-cli manage env, per the IBM installation-variables script. VERSION
-        // pins the olm-utils image; PATCH_ID selects the patch; OPENSHIFT_TYPE/
-        // IMAGE_ARCH describe the cluster. Keep in sync with softwarehub::cpd_env.
-        // OLM_UTILS_IMAGE must be set explicitly (VERSION alone doesn't switch the
-        // olm-utils image cpd-cli uses); default to the icr.io/cpopen path.
-        let olm_image = ctx
-            .input("OLM_UTILS_IMAGE")
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("icr.io/cpopen/cpd/olm-utils-v4:{version}"));
-        let cpd_env = vec![
-            ("VERSION".to_string(), version.clone()),
-            ("PATCH_ID".to_string(), ctx.input("PATCH_ID").unwrap_or("latest").to_string()),
-            ("OPENSHIFT_TYPE".to_string(), ctx.input("OPENSHIFT_TYPE").unwrap_or("self-managed").to_string()),
-            ("IMAGE_ARCH".to_string(), ctx.input("IMAGE_ARCH").unwrap_or("amd64").to_string()),
-            ("OLM_UTILS_IMAGE".to_string(), olm_image),
-        ];
+        let cpd_env = services_cpd_env(ctx);
 
         // install-components installs from locally-downloaded CASE packages —
         // fetch them for the selected components first.
@@ -526,9 +613,28 @@ mod tests {
     }
 
     #[test]
-    fn components_module_has_three_steps() {
+    fn components_module_applies_cluster_resources_before_install() {
+        // Cluster-scoped resources (CRDs for the service + its dependency CASEs)
+        // must be applied before install-components, else bundled operators
+        // CrashLoop on missing CRDs and install-components deadlocks.
         let ids: Vec<_> = ComponentsModule.steps().iter().map(|s| s.id().to_string()).collect();
-        assert_eq!(ids, vec!["select-services", "install-services", "verify-services"]);
+        assert_eq!(
+            ids,
+            vec!["select-services", "services-cluster-resources", "install-services", "verify-services"]
+        );
+    }
+
+    #[tokio::test]
+    async fn cluster_resources_downloads_then_applies_server_side() {
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            MockResponse::ok("case-download", "ok"),
+            MockResponse::ok("apply", "serverside-applied"),
+        ]));
+        let ctx = ctx_inputs(runner.clone(), &[("components", "watsonx_data")]);
+        assert_eq!(ClusterResourcesStep.run(&ctx).await, StepOutcome::Completed);
+        let calls = runner.calls();
+        assert!(calls.iter().any(|c| c.contains("case-download") && c.contains("--cluster_resources=true")));
+        assert!(calls.iter().any(|c| c.contains("cluster_scoped_resources.yaml") && c.contains("--server-side")));
     }
 
     #[tokio::test]
