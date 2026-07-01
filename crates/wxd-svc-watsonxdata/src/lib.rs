@@ -1,5 +1,5 @@
 //! `wxd-svc-watsonxdata` — the watsonx.data implementation of the generic
-//! [`ServiceInstaller`](sw_mod_services::ServiceInstaller) framework.
+//! [`sw_mod_services::ServiceInstaller`] framework.
 //!
 //! This is the only crate that knows watsonx.data specifics: the component token
 //! `watsonx_data`, the `cpd-cli manage apply-cr` invocation, and the operand

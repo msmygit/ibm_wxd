@@ -1,0 +1,27 @@
+name: Security audit
+
+on:
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+  schedule:
+    # Weekly, Monday 06:00 UTC — surfaces newly-disclosed advisories even when
+    # nothing in the repo changed.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+# Same policy as ci.yml: collapse superseded feature-branch/PR runs, never main.
+concurrency:
+  group: audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

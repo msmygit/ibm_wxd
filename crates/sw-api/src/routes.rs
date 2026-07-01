@@ -439,7 +439,7 @@ async fn events(
     let history = state.orch.store().replay_events(&id).unwrap_or_default();
     let rx = state.orch.bus().subscribe();
 
-    let hist = futures::stream::iter(history.into_iter());
+    let hist = futures::stream::iter(history);
     let live = futures::stream::unfold(rx, |mut rx| async move {
         loop {
             match rx.recv().await {

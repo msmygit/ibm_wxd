@@ -138,6 +138,7 @@ const CPD_RELEASES_URL: &str = "https://github.com/IBM/cpd-cli/releases";
 ///   - macOS Apple Silicon (arm64) → `arm64`   ← this is a macOS build, not Linux
 ///   - Linux x86_64                → `linux`
 ///   - Linux ppc64le / s390x       → `ppc64le` / `s390x` (IBM Power / Z)
+///
 /// There is no Linux-arm64 cpd-cli build.
 fn cpd_asset_token(os: &str, arch: &str) -> Option<&'static str> {
     match (os, arch) {

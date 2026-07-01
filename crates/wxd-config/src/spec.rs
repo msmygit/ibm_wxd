@@ -67,7 +67,7 @@ pub const IMAGE_ARCH_VALUES: &[&str] = &["amd64", "s390x"];
 /// `VERSION` when the user supplies none. Currently the latest 5.4.x line
 /// (patch 1 is the latest patch). The env-var contract is stable across 5.x, so
 /// this is a version-reference/default change only — not a contract change.
-/// Docs: https://www.ibm.com/docs/en/cloud-paks/cp-data
+/// Docs: <https://www.ibm.com/docs/en/cloud-paks/cp-data>
 pub const VERSION_DEFAULT: &str = "5.4.0";
 
 /// Default patch level applied to `PATCH_ID` when the user supplies none. The

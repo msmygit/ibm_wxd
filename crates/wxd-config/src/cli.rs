@@ -3,11 +3,13 @@
 //! Hand-rolled parsing (no external crates) keeps the build hermetic and the
 //! binary tiny. The accepted flags are intentionally small:
 //!
+//! ```text
 //!   --non-interactive        Never prompt; take values from --answers + env.
 //!   --answers <FILE>         Read KEY=VALUE answers from FILE.
 //!   --output  <FILE>         Where to write cpd_vars.sh (default: ./cpd_vars.sh).
 //!   --help, -h               Print usage and exit 0.
 //!   --version, -V            Print version and exit 0.
+//! ```
 
 use crate::spec::{ValidationKind, DERIVED, SPEC};
 

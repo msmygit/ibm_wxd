@@ -1,0 +1,6 @@
+[toolchain]
+# Pin CI and local dev to the same compiler for reproducible builds. Bump this
+# to roll the Rust version (keep it in sync with the CI workflow's toolchain).
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
