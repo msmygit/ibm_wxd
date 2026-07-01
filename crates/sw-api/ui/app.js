@@ -108,6 +108,35 @@ async function renderProvisionSpec(provider) {
     // Spec fields with no default must be supplied (except known-optional ones).
     const OPTIONAL = new Set(["resource_tags", "ssh_key"]);
     for (const f of fields) {
+      // OpenShift version: a dropdown of supported minors, plus "Other…" which
+      // reveals a text box for an arbitrary version (e.g. 4.24 or 4.24.3).
+      if (f.key === "ocp_version") {
+        const sel = el("select", { attrs: { "data-provision-input": f.key, id: "ocp-version-select" } });
+        for (const v of ["4.16", "4.18", "4.19", "4.20", "4.21"]) {
+          const opt = el("option", { text: `Version ${v}`, attrs: { value: v } });
+          if (v === (f.default || "4.21")) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        sel.appendChild(el("option", { text: "Other…", attrs: { value: "other" } }));
+        const custom = el("input", {
+          attrs: {
+            type: "text",
+            id: "ocp-version-custom",
+            placeholder: "e.g. 4.24 or 4.24.3",
+            pattern: "4\\.\\d+(\\.\\d+)?",
+            title: "OpenShift version like 4.24 or 4.24.3",
+          },
+        });
+        custom.hidden = true;
+        sel.addEventListener("change", () => {
+          const other = sel.value === "other";
+          custom.hidden = !other;
+          custom.required = other;
+          if (other) custom.focus();
+        });
+        form.appendChild(el("label", {}, [el("span", { text: f.label }), sel, custom]));
+        continue;
+      }
       // Boolean fields (default "true"/"false") render as a checkbox.
       if (f.default === "true" || f.default === "false") {
         const cb = el("input", { attrs: { type: "checkbox", "data-provision-input": f.key } });
@@ -517,13 +546,20 @@ $("#start-btn").addEventListener("click", async () => {
         banner("fail", "Please complete the highlighted required cluster-spec field(s).");
         return;
       }
-      for (const i of pf.querySelectorAll("input[data-provision-input]")) {
+      for (const i of pf.querySelectorAll("input[data-provision-input], select[data-provision-input]")) {
         if (i.type === "checkbox") {
           inputs[i.dataset.provisionInput] = i.checked ? "true" : "false";
           continue;
         }
         const v = i.value.trim();
         if (v) inputs[i.dataset.provisionInput] = v;
+      }
+      // "Other…" OpenShift version → use the custom text box value.
+      if (inputs.ocp_version === "other") {
+        const custom = document.getElementById("ocp-version-custom");
+        const cv = custom ? custom.value.trim() : "";
+        if (cv) inputs.ocp_version = cv;
+        else delete inputs.ocp_version; // fall back to the server default
       }
     }
     const run = await api("/runs", {
