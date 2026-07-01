@@ -33,6 +33,28 @@ fn operators_ns(ctx: &StepContext) -> String {
 fn operands_ns(ctx: &StepContext) -> String {
     input_or(ctx, "PROJECT_CPD_INST_OPERANDS", "cpd-instance")
 }
+fn scheduler_ns(ctx: &StepContext) -> String {
+    input_or(ctx, "PROJECT_SCHEDULING_SERVICE", "ibm-cpd-scheduler")
+}
+fn scheduler_br_ns(ctx: &StepContext) -> String {
+    input_or(ctx, "PROJECT_SCHEDULING_BR_SVC", "ibm-cpd-scheduler-br-svc")
+}
+fn patch_id(ctx: &StepContext) -> String {
+    input_or(ctx, "PATCH_ID", "latest")
+}
+
+/// The platform component set installed by `install-components`. Defaults to the
+/// documented required+recommended base (`ibm-licensing,scheduler,cpd_platform,
+/// br_orchestration`); override via the `platform_components` input (e.g. drop
+/// `scheduler`, which is optional).
+fn platform_components(ctx: &StepContext) -> String {
+    input_or(ctx, "platform_components", "ibm-licensing,scheduler,cpd_platform,br_orchestration")
+}
+
+/// Whether `component` is in the platform component set.
+fn has_component(ctx: &StepContext, component: &str) -> bool {
+    platform_components(ctx).split(',').any(|c| c.trim() == component)
+}
 
 /// The (block, file) storage classes for `install-components`. Software Hub +
 /// watsonx.data need both a block (RWO) and a file (RWX) class. Defaults match a
@@ -440,7 +462,14 @@ impl Step for CreateNamespaces {
         "Create Software Hub namespaces"
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        for ns in [operators_ns(ctx), operands_ns(ctx)] {
+        let mut namespaces = vec![operators_ns(ctx), operands_ns(ctx)];
+        if has_component(ctx, "scheduler") {
+            namespaces.push(scheduler_ns(ctx));
+        }
+        if has_component(ctx, "br_orchestration") {
+            namespaces.push(scheduler_br_ns(ctx));
+        }
+        for ns in namespaces {
             // `oc create namespace` is not idempotent; ignore an AlreadyExists.
             if let Ok(o) = ctx.run_in_cluster("oc", &["get".into(), "namespace".into(), ns.clone()]).await {
                 if o.success() {
@@ -457,6 +486,103 @@ impl Step for CreateNamespaces {
         }
         ctx.progress(100);
         StepOutcome::Completed
+    }
+}
+
+/// Generate the cluster-scoped resources (CRDs, ClusterRoles, webhooks) for a
+/// component via `case-download --cluster_resources=true`, then apply the
+/// resulting `cluster_scoped_resources.yaml` with `oc apply --server-side
+/// --force-conflicts`. `dl_args` is the component-specific case-download args.
+async fn generate_and_apply_cluster_resources(
+    ctx: &StepContext,
+    dl_args: Vec<String>,
+    what: &str,
+) -> StepOutcome {
+    ctx.log(format!("generating cluster-scoped resources for {what}"));
+    match ctx.run_in_cluster_pty_env("cpd-cli", &dl_args, &cpd_env(ctx), &[]).await {
+        Ok(o) if o.success() => {}
+        Ok(o) => return fail(&format!("case-download (cluster resources, {what}) failed (exit {}): {}", o.status, o.stderr.trim()),
+            "Confirm network access to the IBM CASE repository, then retry."),
+        Err(e) => return fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
+    }
+    // Find the generated file (cpd-cli writes it under the workspace `work` dir)
+    // and apply it server-side, per the docs.
+    let script = "set -e; F=$(find cpd-cli-workspace -name cluster_scoped_resources.yaml 2>/dev/null | head -1); \
+                  test -n \"$F\"; oc apply -f \"$F\" --server-side --force-conflicts"
+        .to_string();
+    ctx.log(format!("applying cluster-scoped resources for {what}"));
+    match ctx.run_in_cluster("sh", &["-c".to_string(), script]).await {
+        Ok(o) if o.success() => {
+            ctx.progress(100);
+            StepOutcome::Completed
+        }
+        Ok(o) => fail(&format!("oc apply (cluster resources, {what}) failed (exit {}): {}", o.status, o.stderr.trim()),
+            "Ensure cluster-admin access and that cluster_scoped_resources.yaml was generated, then retry."),
+        Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active session, then retry."),
+    }
+}
+
+/// Create the scheduling service's cluster-scoped resources (only when the
+/// `scheduler` component is selected).
+struct SchedulerClusterResources;
+
+#[async_trait]
+impl Step for SchedulerClusterResources {
+    fn id(&self) -> &str {
+        "scheduler-cluster-resources"
+    }
+    fn title(&self) -> &str {
+        "Cluster resources: scheduling service"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        if !has_component(ctx, "scheduler") {
+            ctx.log("scheduler not selected; skipping its cluster-scoped resources");
+            ctx.progress(100);
+            return StepOutcome::Completed;
+        }
+        let args = vec![
+            "manage".into(),
+            "case-download".into(),
+            "--components=scheduler".into(),
+            format!("--release={}", version(ctx)),
+            format!("--patch_id={}", patch_id(ctx)),
+            format!("--scheduler_ns={}", scheduler_ns(ctx)),
+            "--cluster_resources=true".into(),
+        ];
+        generate_and_apply_cluster_resources(ctx, args, "the scheduling service").await
+    }
+}
+
+/// Create the Backup/Restore Orchestration service's cluster-scoped resources
+/// (only when the `br_orchestration` component is selected).
+struct BrClusterResources;
+
+#[async_trait]
+impl Step for BrClusterResources {
+    fn id(&self) -> &str {
+        "br-cluster-resources"
+    }
+    fn title(&self) -> &str {
+        "Cluster resources: backup/restore orchestration"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        if !has_component(ctx, "br_orchestration") {
+            ctx.log("br_orchestration not selected; skipping its cluster-scoped resources");
+            ctx.progress(100);
+            return StepOutcome::Completed;
+        }
+        let br_ns = scheduler_br_ns(ctx);
+        let args = vec![
+            "manage".into(),
+            "case-download".into(),
+            "--components=br_orchestration".into(),
+            format!("--release={}", version(ctx)),
+            format!("--patch_id={}", patch_id(ctx)),
+            format!("--operator_ns={br_ns}"),
+            format!("--br_operator_ns={br_ns}"),
+            "--cluster_resources=true".into(),
+        ];
+        generate_and_apply_cluster_resources(ctx, args, "backup/restore orchestration").await
     }
 }
 
@@ -524,16 +650,17 @@ impl Step for InstallPlatform {
             }
         }
 
-        if let Some(outcome) = case_download(ctx, &version, "cpd_platform").await {
+        let components = platform_components(ctx);
+        if let Some(outcome) = case_download(ctx, &version, &components).await {
             return outcome;
         }
 
-        ctx.log(format!("installing cpd_platform (release {version}); block={block_sc}, file={file_sc}"));
+        ctx.log(format!("installing platform [{components}] (release {version}); block={block_sc}, file={file_sc}"));
         let args = vec![
             "manage".into(),
             "install-components".into(),
             "--license_acceptance=true".into(),
-            "--components=cpd_platform".into(),
+            format!("--components={components}"),
             format!("--release={version}"),
             format!("--operator_ns={op_ns}"),
             format!("--instance_ns={inst_ns}"),
@@ -644,6 +771,8 @@ impl Module for SoftwareHubModule {
             Box::new(WaitNodesReady),
             Box::new(InstallCertManager),
             Box::new(CreateNamespaces),
+            Box::new(SchedulerClusterResources),
+            Box::new(BrClusterResources),
             Box::new(ApplyClusterComponents),
             Box::new(InstallPlatform),
             Box::new(WaitReady),
@@ -687,6 +816,8 @@ mod tests {
                 "wait-nodes-ready",
                 "install-cert-manager",
                 "create-namespaces",
+                "scheduler-cluster-resources",
+                "br-cluster-resources",
                 "apply-cluster-components",
                 "install-platform",
                 "wait-ready",
@@ -753,6 +884,23 @@ mod tests {
         let runner = MockCommandRunner::new(vec![MockResponse::ok("get deployment cert-manager-webhook", "cert-manager-webhook")]);
         let ctx = ctx_with(runner, &[], &[]);
         assert_eq!(InstallCertManager.run(&ctx).await, StepOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn scheduler_cluster_resources_skips_when_not_selected() {
+        let ctx = ctx_with(MockCommandRunner::new(vec![]), &[("platform_components", "cpd_platform")], &[]);
+        assert_eq!(SchedulerClusterResources.run(&ctx).await, StepOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn scheduler_cluster_resources_generates_and_applies_when_selected() {
+        // Default platform_components includes scheduler → case-download then oc apply.
+        let runner = MockCommandRunner::new(vec![
+            MockResponse::ok("case-download", "ok"),
+            MockResponse::ok("apply", "applied"),
+        ]);
+        let ctx = ctx_with(runner, &[], &[]);
+        assert_eq!(SchedulerClusterResources.run(&ctx).await, StepOutcome::Completed);
     }
 
     #[tokio::test]
