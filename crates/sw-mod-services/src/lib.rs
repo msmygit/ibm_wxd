@@ -232,6 +232,7 @@ impl Step for ApplyComponentsStep {
         let op_ns = ctx.input("PROJECT_CPD_INST_OPERATORS").unwrap_or("cpd-operators").to_string();
         let inst_ns = operands_ns(ctx);
         let version = ctx.input("VERSION").unwrap_or("5.4.0").to_string();
+        let patch_id = ctx.input("PATCH_ID").unwrap_or("latest").to_string();
         // Software Hub services (watsonx.data et al.) need both a block (RWO) and
         // a file (RWX) storage class. Defaults match a provisioned AWS cluster.
         let block_sc = ctx.input("block_storage_class").unwrap_or("gp3-csi").to_string();
@@ -256,6 +257,7 @@ impl Step for ApplyComponentsStep {
             "manage".into(),
             "case-download".into(),
             format!("--release={version}"),
+            format!("--patch_id={patch_id}"),
             format!("--components={components}"),
         ];
         match ctx.run_in_cluster_pty_env("cpd-cli", &dl, &cpd_env, &[]).await {
@@ -277,17 +279,26 @@ impl Step for ApplyComponentsStep {
         ctx.log(format!(
             "installing components [{components}] (release {version}); block={block_sc}, file={file_sc}"
         ));
-        let args = vec![
+        let mut args = vec![
             "manage".into(),
             "install-components".into(),
             "--license_acceptance=true".into(),
             format!("--components={components}"),
             format!("--release={version}"),
+            format!("--patch_id={patch_id}"),
             format!("--operator_ns={op_ns}"),
             format!("--instance_ns={inst_ns}"),
             format!("--block_storage_class={block_sc}"),
             format!("--file_storage_class={file_sc}"),
         ];
+        // When a namespace-scoped image pull secret is configured (private
+        // registry, or an explicit entitled-registry secret), pass it. The
+        // default online path relies on the cluster's global pull secret.
+        if let Some(secret) = ctx.input("IMAGE_PULL_SECRET").filter(|v| !v.is_empty()) {
+            let prefix = ctx.input("IMAGE_PULL_PREFIX").unwrap_or("icr.io");
+            args.push(format!("--image_pull_prefix={prefix}"));
+            args.push(format!("--image_pull_secret={secret}"));
+        }
         match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env, &[]).await {
             Ok(o) if o.success() => {
                 ctx.progress(100);
