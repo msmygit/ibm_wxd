@@ -1,4 +1,4 @@
-# watsonx.data Easy Installer
+# IBM Software Hub + watsonx.data Easy Installer
 
 A guided, modular installer that takes you from **nothing** to a running **IBM
 watsonx.data** service, end to end: create a self-managed OpenShift cluster on a
@@ -10,7 +10,7 @@ clear next steps, error capture, and **pause/resume/retry**. See the
 **[Roadmap](#roadmap)** for status and issue
 [#1](https://github.com/msmygit/ibm_wxd/issues/1).
 
-Docs: <https://www.ibm.com/docs/en/cloud-paks/cp-data>
+Docs: <https://www.ibm.com/docs/en/software-hub/5.4.x>
 
 ## Run the installer
 

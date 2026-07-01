@@ -1220,6 +1220,12 @@ fn spec_fields() -> Vec<InputField> {
             default: Some("3".to_string()),
         },
         InputField {
+            key: "control_plane_volume_size".to_string(),
+            label: "Control plane root disk (GB, min 300 for Software Hub)".to_string(),
+            secret: false,
+            default: Some("300".to_string()),
+        },
+        InputField {
             key: "worker_type".to_string(),
             label: "Worker instance type".to_string(),
             secret: false,
@@ -1230,6 +1236,12 @@ fn spec_fields() -> Vec<InputField> {
             label: "Worker node count".to_string(),
             secret: false,
             default: Some("3".to_string()),
+        },
+        InputField {
+            key: "worker_volume_size".to_string(),
+            label: "Worker root disk (GB, min 300 for Software Hub / watsonx.data)".to_string(),
+            secret: false,
+            default: Some("300".to_string()),
         },
         InputField {
             key: "resource_tags".to_string(),
@@ -1276,6 +1288,18 @@ pub fn parse_tags(raw: &str) -> Vec<(String, String)> {
 /// The result is deterministic given the same inputs. The pull secret is
 /// embedded verbatim (it is required by `openshift-install`); callers must keep
 /// the cluster dir out of any logs/artifacts that get shared.
+/// A `platform.aws.rootVolume` block (node boot/root disk) at 6-space indent, or
+/// empty when `size` is blank (fall back to the openshift-install default). IBM
+/// Software Hub / watsonx.data recommends a larger root disk than the ~120 GB
+/// default so container image + local storage doesn't exhaust the node.
+fn root_volume_block(size: &str) -> String {
+    let size = size.trim();
+    if size.is_empty() {
+        return String::new();
+    }
+    format!("      rootVolume:\n        size: {size}\n        type: gp3\n")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_install_config(
     cluster_name: &str,
@@ -1283,12 +1307,16 @@ pub fn render_install_config(
     region: &str,
     control_plane_type: &str,
     control_plane_count: &str,
+    control_plane_volume_size: &str,
     worker_type: &str,
     worker_count: &str,
+    worker_volume_size: &str,
     pull_secret: &str,
     ssh_key: Option<&str>,
     user_tags: &[(String, String)],
 ) -> String {
+    let worker_root = root_volume_block(worker_volume_size);
+    let control_plane_root = root_volume_block(control_plane_volume_size);
     let ssh_line = match ssh_key {
         Some(key) if !key.is_empty() => format!("sshKey: '{}'\n", key.trim()),
         _ => String::new(),
@@ -1315,12 +1343,14 @@ pub fn render_install_config(
          platform:\n    \
          aws:\n      \
          type: {worker_type}\n\
+         {worker_root}\
          controlPlane:\n  \
          name: master\n  \
          replicas: {control_plane_count}\n  \
          platform:\n    \
          aws:\n      \
          type: {control_plane_type}\n\
+         {control_plane_root}\
          platform:\n  \
          aws:\n    \
          region: {region}\n\
@@ -1891,8 +1921,10 @@ fn write_install_config(ctx: &StepContext) -> Result<std::path::PathBuf, StepOut
     };
     let control_plane_type = ctx.input("control_plane_type").unwrap_or("m6i.2xlarge");
     let control_plane_count = ctx.input("control_plane_count").unwrap_or("3");
+    let control_plane_volume_size = ctx.input("control_plane_volume_size").unwrap_or("300");
     let worker_type = ctx.input("worker_type").unwrap_or("m6i.4xlarge");
     let worker_count = ctx.input("worker_count").unwrap_or("3");
+    let worker_volume_size = ctx.input("worker_volume_size").unwrap_or("300");
     let cluster_name = ctx.input("cluster_name").unwrap_or("wxd");
     let pull_secret = resolve_pull_secret(ctx)?;
     let ssh_key = ctx.input("ssh_key");
@@ -1913,8 +1945,10 @@ fn write_install_config(ctx: &StepContext) -> Result<std::path::PathBuf, StepOut
         region,
         control_plane_type,
         control_plane_count,
+        control_plane_volume_size,
         worker_type,
         worker_count,
+        worker_volume_size,
         &pull_secret,
         ssh_key,
         &user_tags,
@@ -2003,13 +2037,15 @@ mod tests {
         let outcome = cluster_spec().run(&ctx).await;
         match outcome {
             StepOutcome::NeedsInput { fields, .. } => {
-                assert_eq!(fields.len(), 10, "should request all spec fields");
+                assert_eq!(fields.len(), 12, "should request all spec fields");
                 let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
                 assert!(keys.contains(&"cluster_name"));
                 assert!(keys.contains(&"region"));
                 assert!(keys.contains(&"base_domain"));
                 assert!(keys.contains(&"ocp_version"));
                 assert!(keys.contains(&"worker_count"));
+                assert!(keys.contains(&"control_plane_volume_size"));
+                assert!(keys.contains(&"worker_volume_size"));
                 assert!(keys.contains(&"resource_tags"));
             }
             other => panic!("expected NeedsInput, got {other:?}"),
@@ -2388,6 +2424,30 @@ mod tests {
     #[test]
     fn provisioner_id_is_aws() {
         assert_eq!(AwsProvisioner::new().id(), "aws");
+    }
+
+    #[test]
+    fn install_config_embeds_root_volume_sizes() {
+        let cfg = render_install_config(
+            "wxd", "example.com", "us-east-2", "m6i.2xlarge", "3", "350", "m6i.4xlarge", "3", "400",
+            "{}", None, &[],
+        );
+        // Worker rootVolume under the compute pool, control-plane under controlPlane.
+        assert!(cfg.contains("      rootVolume:\n        size: 400\n        type: gp3\n"));
+        assert!(cfg.contains("      rootVolume:\n        size: 350\n        type: gp3\n"));
+        // Blocks sit inside the right pools (worker size before controlPlane:).
+        let worker_idx = cfg.find("size: 400").unwrap();
+        let cp_key_idx = cfg.find("controlPlane:").unwrap();
+        assert!(worker_idx < cp_key_idx, "worker rootVolume must be in the compute pool");
+    }
+
+    #[test]
+    fn install_config_omits_root_volume_when_blank() {
+        let cfg = render_install_config(
+            "wxd", "example.com", "us-east-2", "m6i.2xlarge", "3", "", "m6i.4xlarge", "3", "",
+            "{}", None, &[],
+        );
+        assert!(!cfg.contains("rootVolume"), "no rootVolume block when size is blank");
     }
 
     #[test]
