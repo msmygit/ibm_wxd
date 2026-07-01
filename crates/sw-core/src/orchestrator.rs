@@ -406,7 +406,10 @@ mod tests {
         let mut state = orch.create_run("run-happy".into()).unwrap();
         orch.drive(&mut state).await.unwrap();
         assert_eq!(state.status, RunStatus::Completed);
-        assert!(state.steps.iter().all(|s| s.status == StepStatus::Completed));
+        assert!(state
+            .steps
+            .iter()
+            .all(|s| s.status == StepStatus::Completed));
         assert_eq!(state.cursor, 2);
     }
 

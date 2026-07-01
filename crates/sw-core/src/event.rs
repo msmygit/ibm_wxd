@@ -11,24 +11,13 @@ use tokio::sync::broadcast;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
     /// A step changed status.
-    StepStatus {
-        step: StepId,
-        status: StepStatus,
-    },
+    StepStatus { step: StepId, status: StepStatus },
     /// A line of log output from a step.
-    Log {
-        step: StepId,
-        line: String,
-    },
+    Log { step: StepId, line: String },
     /// Coarse progress for a step, 0..=100.
-    Progress {
-        step: StepId,
-        percent: u8,
-    },
+    Progress { step: StepId, percent: u8 },
     /// The run as a whole changed status.
-    RunStatus {
-        status: RunStatus,
-    },
+    RunStatus { status: RunStatus },
 }
 
 /// A cloneable broadcast bus. Each subscriber gets every event published after
@@ -74,7 +63,12 @@ mod tests {
             status: RunStatus::Running,
         });
         let got = rx.recv().await.unwrap();
-        assert_eq!(got, Event::RunStatus { status: RunStatus::Running });
+        assert_eq!(
+            got,
+            Event::RunStatus {
+                status: RunStatus::Running
+            }
+        );
     }
 
     #[test]

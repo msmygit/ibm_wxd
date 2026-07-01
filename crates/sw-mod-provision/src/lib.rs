@@ -13,9 +13,7 @@
 //! `sw_core::MockCommandRunner` — no real cloud, no real `openshift-install`.
 
 use async_trait::async_trait;
-use sw_core::{
-    InputField, Module, Step, StepContext, StepOutcome,
-};
+use sw_core::{InputField, Module, Step, StepContext, StepOutcome};
 
 /// The cloud-agnostic provisioning seam.
 ///
@@ -91,8 +89,14 @@ impl ProvisionerRegistry {
     pub fn new() -> Self {
         let mut by_id: std::collections::BTreeMap<String, std::sync::Arc<dyn Provisioner>> =
             std::collections::BTreeMap::new();
-        by_id.insert("aws".to_string(), std::sync::Arc::new(AwsProvisioner::new()));
-        Self { by_id, default: "aws".to_string() }
+        by_id.insert(
+            "aws".to_string(),
+            std::sync::Arc::new(AwsProvisioner::new()),
+        );
+        Self {
+            by_id,
+            default: "aws".to_string(),
+        }
     }
 
     /// Register (or replace) a provisioner. Returns self for chaining.
@@ -113,7 +117,10 @@ impl ProvisionerRegistry {
     /// Spec fields for a provider, or empty if it isn't implemented yet
     /// (so the UI shows "coming soon" rather than borrowing AWS's fields).
     pub fn spec_fields(&self, id: &str) -> Vec<InputField> {
-        self.by_id.get(id).map(|p| p.spec_fields()).unwrap_or_default()
+        self.by_id
+            .get(id)
+            .map(|p| p.spec_fields())
+            .unwrap_or_default()
     }
 }
 
@@ -159,7 +166,11 @@ fn ocp_channel(version: &str) -> String {
     if v.is_empty() {
         return "stable".to_string();
     }
-    if v.starts_with("stable") || v.starts_with("latest") || v.starts_with("fast") || v.starts_with("candidate") {
+    if v.starts_with("stable")
+        || v.starts_with("latest")
+        || v.starts_with("fast")
+        || v.starts_with("candidate")
+    {
         return v.to_string();
     }
     if v.matches('.').count() >= 2 {
@@ -186,7 +197,9 @@ async fn ensure_installer_version(ctx: &StepContext, version: &str) {
         .join(".");
     if let Ok(o) = ctx.run("openshift-install", &["version".to_string()]).await {
         if o.success() && o.stdout.contains(&format!("openshift-install {minor}.")) {
-            ctx.log(format!("openshift-install already matches OpenShift {minor}"));
+            ctx.log(format!(
+                "openshift-install already matches OpenShift {minor}"
+            ));
             return;
         }
     }
@@ -195,11 +208,19 @@ async fn ensure_installer_version(ctx: &StepContext, version: &str) {
     let (arch, file) = match std::env::consts::OS {
         "macos" => (
             if arm { "arm64" } else { "x86_64" },
-            if arm { "openshift-install-mac-arm64.tar.gz" } else { "openshift-install-mac.tar.gz" },
+            if arm {
+                "openshift-install-mac-arm64.tar.gz"
+            } else {
+                "openshift-install-mac.tar.gz"
+            },
         ),
         _ => (
             if arm { "arm64" } else { "x86_64" },
-            if arm { "openshift-install-linux-arm64.tar.gz" } else { "openshift-install-linux.tar.gz" },
+            if arm {
+                "openshift-install-linux-arm64.tar.gz"
+            } else {
+                "openshift-install-linux.tar.gz"
+            },
         ),
     };
     let script = format!(
@@ -207,7 +228,9 @@ async fn ensure_installer_version(ctx: &StepContext, version: &str) {
          curl -fsSL \"https://mirror.openshift.com/pub/openshift-v4/{arch}/clients/ocp/{channel}/{file}\" -o /tmp/wxd-ois.tgz; \
          tar xzf /tmp/wxd-ois.tgz -C \"$BIN\" openshift-install; chmod +x \"$BIN/openshift-install\""
     );
-    ctx.log(format!("installing openshift-install for OpenShift {version} (channel {channel})"));
+    ctx.log(format!(
+        "installing openshift-install for OpenShift {version} (channel {channel})"
+    ));
     match ctx.run("sh", &["-c".to_string(), script]).await {
         Ok(o) if o.success() => ctx.log("openshift-install version ready"),
         Ok(o) => ctx.log(format!(
@@ -280,7 +303,11 @@ fn parse_mount_target_ids(json: &str) -> Vec<String> {
         .and_then(|v| v.get("MountTargets").and_then(|m| m.as_array()).cloned())
         .map(|arr| {
             arr.iter()
-                .filter_map(|m| m.get("MountTargetId").and_then(|x| x.as_str()).map(String::from))
+                .filter_map(|m| {
+                    m.get("MountTargetId")
+                        .and_then(|x| x.as_str())
+                        .map(String::from)
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -290,10 +317,18 @@ fn parse_mount_target_ids(json: &str) -> Vec<String> {
 fn parse_resource_arns(json: &str) -> Vec<String> {
     serde_json::from_str::<serde_json::Value>(json)
         .ok()
-        .and_then(|v| v.get("ResourceTagMappingList").and_then(|l| l.as_array()).cloned())
+        .and_then(|v| {
+            v.get("ResourceTagMappingList")
+                .and_then(|l| l.as_array())
+                .cloned()
+        })
         .map(|arr| {
             arr.iter()
-                .filter_map(|m| m.get("ResourceARN").and_then(|x| x.as_str()).map(String::from))
+                .filter_map(|m| {
+                    m.get("ResourceARN")
+                        .and_then(|x| x.as_str())
+                        .map(String::from)
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -374,7 +409,10 @@ fn resolve_pull_secret(ctx: &StepContext) -> Result<String, StepOutcome> {
     if let Some(s) = ctx.secret("pull_secret").filter(|s| !s.trim().is_empty()) {
         return Ok(s.trim().to_string());
     }
-    if let Some(p) = ctx.input("pull_secret_path").filter(|p| !p.trim().is_empty()) {
+    if let Some(p) = ctx
+        .input("pull_secret_path")
+        .filter(|p| !p.trim().is_empty())
+    {
         let path = expand_tilde(p.trim());
         return match std::fs::read_to_string(&path) {
             Ok(c) if !c.trim().is_empty() => Ok(c.trim().to_string()),
@@ -490,11 +528,18 @@ impl Provisioner for AwsProvisioner {
             }
         }
         let outcome = if started {
-            ctx.log("install already in progress — resuming (wait-for bootstrap + install-complete)");
+            ctx.log(
+                "install already in progress — resuming (wait-for bootstrap + install-complete)",
+            );
             ctx.progress(20);
             let bc = run_openshift_install_streaming(
                 ctx,
-                &["wait-for".into(), "bootstrap-complete".into(), "--dir".into(), dir_str.clone()],
+                &[
+                    "wait-for".into(),
+                    "bootstrap-complete".into(),
+                    "--dir".into(),
+                    dir_str.clone(),
+                ],
                 &env,
             )
             .await;
@@ -504,7 +549,12 @@ impl Provisioner for AwsProvisioner {
                 let _ = ctx
                     .run_with_env(
                         "openshift-install",
-                        &["destroy".into(), "bootstrap".into(), "--dir".into(), dir_str.clone()],
+                        &[
+                            "destroy".into(),
+                            "bootstrap".into(),
+                            "--dir".into(),
+                            dir_str.clone(),
+                        ],
                         &env,
                     )
                     .await;
@@ -512,7 +562,12 @@ impl Provisioner for AwsProvisioner {
             ctx.progress(60);
             run_openshift_install_streaming(
                 ctx,
-                &["wait-for".into(), "install-complete".into(), "--dir".into(), dir_str.clone()],
+                &[
+                    "wait-for".into(),
+                    "install-complete".into(),
+                    "--dir".into(),
+                    dir_str.clone(),
+                ],
                 &env,
             )
             .await
@@ -521,7 +576,12 @@ impl Provisioner for AwsProvisioner {
             ctx.progress(10);
             run_openshift_install_streaming(
                 ctx,
-                &["create".into(), "cluster".into(), "--dir".into(), dir_str.clone()],
+                &[
+                    "create".into(),
+                    "cluster".into(),
+                    "--dir".into(),
+                    dir_str.clone(),
+                ],
                 &env,
             )
             .await
@@ -588,7 +648,9 @@ impl Provisioner for AwsProvisioner {
         if let Some(infra) = infra.as_deref() {
             teardown_efs(ctx, infra).await;
         } else {
-            ctx.log("warning: could not read cluster infra ID (metadata.json) — skipping EFS teardown");
+            ctx.log(
+                "warning: could not read cluster infra ID (metadata.json) — skipping EFS teardown",
+            );
         }
 
         ctx.log("destroying OpenShift cluster via openshift-install");
@@ -598,7 +660,10 @@ impl Provisioner for AwsProvisioner {
             "--dir".to_string(),
             dir_str,
         ];
-        let outcome = match ctx.run_with_env("openshift-install", &args, &aws_env(ctx)).await {
+        let outcome = match ctx
+            .run_with_env("openshift-install", &args, &aws_env(ctx))
+            .await
+        {
             Ok(out) if out.success() => StepOutcome::Completed,
             Ok(out) => StepOutcome::Failed {
                 error: format!(
@@ -607,17 +672,13 @@ impl Provisioner for AwsProvisioner {
                     out.stderr.trim()
                 ),
                 next_steps: vec![
-                    "Inspect the cluster dir's .openshift_install.log for details."
-                        .to_string(),
-                    "Some cloud resources may need manual cleanup in the AWS console."
-                        .to_string(),
+                    "Inspect the cluster dir's .openshift_install.log for details.".to_string(),
+                    "Some cloud resources may need manual cleanup in the AWS console.".to_string(),
                 ],
             },
             Err(e) => StepOutcome::Failed {
                 error: format!("could not run openshift-install: {e}"),
-                next_steps: vec![
-                    "Ensure openshift-install is installed and on PATH.".to_string(),
-                ],
+                next_steps: vec!["Ensure openshift-install is installed and on PATH.".to_string()],
             },
         };
 
@@ -666,7 +727,9 @@ async fn teardown_efs(ctx: &StepContext, infra: &str) {
             return;
         }
         Err(e) => {
-            ctx.log(format!("warning: could not run aws efs describe-file-systems: {e} — skipping EFS teardown"));
+            ctx.log(format!(
+                "warning: could not run aws efs describe-file-systems: {e} — skipping EFS teardown"
+            ));
             return;
         }
     };
@@ -680,17 +743,33 @@ async fn teardown_efs(ctx: &StepContext, infra: &str) {
     let mt = ctx
         .run_with_env(
             "aws",
-            &["efs".into(), "describe-mount-targets".into(), "--file-system-id".into(), fs.clone(), "--output".into(), "json".into()],
+            &[
+                "efs".into(),
+                "describe-mount-targets".into(),
+                "--file-system-id".into(),
+                fs.clone(),
+                "--output".into(),
+                "json".into(),
+            ],
             &env,
         )
         .await;
-    let mount_targets = mt.ok().filter(|o| o.success()).map(|o| parse_mount_target_ids(&o.stdout)).unwrap_or_default();
+    let mount_targets = mt
+        .ok()
+        .filter(|o| o.success())
+        .map(|o| parse_mount_target_ids(&o.stdout))
+        .unwrap_or_default();
     for id in &mount_targets {
         ctx.log(format!("deleting EFS mount target {id}"));
         let _ = ctx
             .run_with_env(
                 "aws",
-                &["efs".into(), "delete-mount-target".into(), "--mount-target-id".into(), id.clone()],
+                &[
+                    "efs".into(),
+                    "delete-mount-target".into(),
+                    "--mount-target-id".into(),
+                    id.clone(),
+                ],
                 &env,
             )
             .await;
@@ -705,11 +784,22 @@ async fn teardown_efs(ctx: &StepContext, infra: &str) {
             let still = ctx
                 .run_with_env(
                     "aws",
-                    &["efs".into(), "describe-mount-targets".into(), "--file-system-id".into(), fs.clone(), "--output".into(), "json".into()],
+                    &[
+                        "efs".into(),
+                        "describe-mount-targets".into(),
+                        "--file-system-id".into(),
+                        fs.clone(),
+                        "--output".into(),
+                        "json".into(),
+                    ],
                     &env,
                 )
                 .await;
-            let remaining = still.ok().filter(|o| o.success()).map(|o| parse_mount_target_ids(&o.stdout)).unwrap_or_default();
+            let remaining = still
+                .ok()
+                .filter(|o| o.success())
+                .map(|o| parse_mount_target_ids(&o.stdout))
+                .unwrap_or_default();
             if remaining.is_empty() {
                 break;
             }
@@ -776,7 +866,9 @@ async fn destroy_report(ctx: &StepContext, infra: &str) {
                 Vec::new()
             }
             Err(e) => {
-                ctx.log(format!("warning: could not run aws resourcegroupstaggingapi get-resources: {e}"));
+                ctx.log(format!(
+                    "warning: could not run aws resourcegroupstaggingapi get-resources: {e}"
+                ));
                 Vec::new()
             }
         };
@@ -801,7 +893,10 @@ async fn destroy_report(ctx: &StepContext, infra: &str) {
     } else {
         for r in &remaining {
             let billable = if r.billable { " [BILLABLE]" } else { "" };
-            ctx.log(format!("REMAINING{billable} {}/{} {}", r.service, r.resource_type, r.id));
+            ctx.log(format!(
+                "REMAINING{billable} {}/{} {}",
+                r.service, r.resource_type, r.id
+            ));
         }
         let billable_count = remaining.iter().filter(|r| r.billable).count();
         ctx.log(format!(
@@ -828,7 +923,10 @@ fn write_destroy_report_files(
     } else {
         for r in remaining {
             let billable = if r.billable { " [BILLABLE]" } else { "" };
-            txt.push_str(&format!("REMAINING{billable} {}/{} {}\n", r.service, r.resource_type, r.id));
+            txt.push_str(&format!(
+                "REMAINING{billable} {}/{} {}\n",
+                r.service, r.resource_type, r.id
+            ));
         }
         let billable_count = remaining.iter().filter(|r| r.billable).count();
         txt.push_str(&format!(
@@ -839,7 +937,10 @@ fn write_destroy_report_files(
     }
     let txt_path = ctx.artifacts_dir().join("destroy-report.txt");
     if let Err(e) = std::fs::write(&txt_path, &txt) {
-        ctx.log(format!("warning: could not write {}: {e}", txt_path.display()));
+        ctx.log(format!(
+            "warning: could not write {}: {e}",
+            txt_path.display()
+        ));
     }
 
     let resources: Vec<serde_json::Value> = remaining
@@ -860,8 +961,14 @@ fn write_destroy_report_files(
         "remaining": resources,
     });
     let json_path = ctx.artifacts_dir().join("destroy-report.json");
-    if let Err(e) = std::fs::write(&json_path, serde_json::to_string_pretty(&json).unwrap_or_default()) {
-        ctx.log(format!("warning: could not write {}: {e}", json_path.display()));
+    if let Err(e) = std::fs::write(
+        &json_path,
+        serde_json::to_string_pretty(&json).unwrap_or_default(),
+    ) {
+        ctx.log(format!(
+            "warning: could not write {}: {e}",
+            json_path.display()
+        ));
     }
 }
 
@@ -870,7 +977,11 @@ fn write_destroy_report_files(
 fn api_fqdn(ctx: &StepContext) -> Option<String> {
     let cluster = ctx.input("cluster_name").filter(|s| !s.trim().is_empty())?;
     let base = ctx.input("base_domain").filter(|s| !s.trim().is_empty())?;
-    Some(format!("api.{}.{}", cluster.trim(), base.trim().trim_end_matches('.')))
+    Some(format!(
+        "api.{}.{}",
+        cluster.trim(),
+        base.trim().trim_end_matches('.')
+    ))
 }
 
 /// Whether an `openshift-install` failure (install-log tail or stderr) is the
@@ -889,7 +1000,11 @@ fn parse_api_record_ips(list_rrsets_json: &str, api_fqdn: &str) -> Vec<String> {
     let want = api_fqdn.trim_end_matches('.').to_ascii_lowercase();
     serde_json::from_str::<serde_json::Value>(list_rrsets_json)
         .ok()
-        .and_then(|v| v.get("ResourceRecordSets").and_then(|r| r.as_array()).cloned())
+        .and_then(|v| {
+            v.get("ResourceRecordSets")
+                .and_then(|r| r.as_array())
+                .cloned()
+        })
         .map(|sets| {
             sets.iter()
                 .filter(|rs| {
@@ -937,7 +1052,12 @@ async fn resolve_api_ips(ctx: &StepContext, fqdn: &str) -> Vec<String> {
         let listing = ctx
             .run_with_env(
                 "aws",
-                &["route53".into(), "list-hosted-zones".into(), "--output".into(), "json".into()],
+                &[
+                    "route53".into(),
+                    "list-hosted-zones".into(),
+                    "--output".into(),
+                    "json".into(),
+                ],
                 &env,
             )
             .await;
@@ -1035,7 +1155,10 @@ fn extract_progress_line(raw: &str) -> Option<String> {
     // Skip klog lines (I0630…, E0630…, W0630…, F0630…) — noise, not milestones.
     if let Some(c) = line.chars().next() {
         if matches!(c, 'I' | 'E' | 'W' | 'F')
-            && line.get(1..5).map(|d| d.chars().all(|c| c.is_ascii_digit())).unwrap_or(false)
+            && line
+                .get(1..5)
+                .map(|d| d.chars().all(|c| c.is_ascii_digit()))
+                .unwrap_or(false)
         {
             return None;
         }
@@ -1154,15 +1277,12 @@ async fn provision_next_steps_for_failure(ctx: &StepContext, stderr: &str) -> Ve
 /// AWS IPI install.
 fn provision_failure_next_steps() -> Vec<String> {
     vec![
-        "Check AWS service quotas (EC2 vCPUs, Elastic IPs, VPCs) in the target region."
-            .to_string(),
+        "Check AWS service quotas (EC2 vCPUs, Elastic IPs, VPCs) in the target region.".to_string(),
         "Verify the IAM principal has the permissions openshift-install requires \
          (EC2, Route53, IAM, S3, ELB)."
             .to_string(),
-        "Confirm the base domain is a Route53 public hosted zone in this account."
-            .to_string(),
-        "Review the install log at <artifacts>/cluster/.openshift_install.log."
-            .to_string(),
+        "Confirm the base domain is a Route53 public hosted zone in this account.".to_string(),
+        "Review the install log at <artifacts>/cluster/.openshift_install.log.".to_string(),
     ]
 }
 
@@ -1369,7 +1489,13 @@ pub fn sanitize_cluster_name(raw: &str) -> String {
         .trim()
         .to_ascii_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let trimmed = mapped.trim_matches(|c: char| !c.is_ascii_alphanumeric());
     if trimmed.is_empty() {
@@ -1385,7 +1511,8 @@ pub fn sanitize_cluster_name(raw: &str) -> String {
 fn build_user_tags(cluster_name: &str, resource_tags: &str) -> Vec<(String, String)> {
     let mut tags = vec![("cluster-name".to_string(), cluster_name.to_string())];
     for (k, v) in parse_tags(resource_tags) {
-        if k.eq_ignore_ascii_case("Name") || k.starts_with("kubernetes.io/") || k == "cluster-name" {
+        if k.eq_ignore_ascii_case("Name") || k.starts_with("kubernetes.io/") || k == "cluster-name"
+        {
             continue; // reserved / already set
         }
         tags.push((k, v));
@@ -1410,7 +1537,9 @@ impl Default for ProvisionModule {
 impl ProvisionModule {
     /// Module with the built-in providers (AWS today).
     pub fn new() -> Self {
-        Self { reg: std::sync::Arc::new(ProvisionerRegistry::new()) }
+        Self {
+            reg: std::sync::Arc::new(ProvisionerRegistry::new()),
+        }
     }
 
     /// Module with a custom provisioner registry (e.g. AWS + GCP + Azure).
@@ -1430,11 +1559,21 @@ impl Module for ProvisionModule {
 
     fn steps(&self) -> Vec<Box<dyn Step>> {
         vec![
-            Box::new(ClusterSpecStep { reg: self.reg.clone() }),
-            Box::new(PreflightStep { reg: self.reg.clone() }),
-            Box::new(EnsureDnsStep { reg: self.reg.clone() }),
-            Box::new(WriteConfigStep { reg: self.reg.clone() }),
-            Box::new(CreateClusterStep { reg: self.reg.clone() }),
+            Box::new(ClusterSpecStep {
+                reg: self.reg.clone(),
+            }),
+            Box::new(PreflightStep {
+                reg: self.reg.clone(),
+            }),
+            Box::new(EnsureDnsStep {
+                reg: self.reg.clone(),
+            }),
+            Box::new(WriteConfigStep {
+                reg: self.reg.clone(),
+            }),
+            Box::new(CreateClusterStep {
+                reg: self.reg.clone(),
+            }),
         ]
     }
 }
@@ -1559,7 +1698,9 @@ struct CreateClusterStep {
 #[cfg(test)]
 impl CreateClusterStep {
     fn new() -> Self {
-        Self { reg: std::sync::Arc::new(ProvisionerRegistry::new()) }
+        Self {
+            reg: std::sync::Arc::new(ProvisionerRegistry::new()),
+        }
     }
 }
 #[async_trait]
@@ -1573,7 +1714,9 @@ impl Step for CreateClusterStep {
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let p = self.reg.get(&provider_id(ctx));
         let complete = install_complete_marker(ctx).exists();
-        let started = cluster_dir(ctx).join(".openshift_install_state.json").exists();
+        let started = cluster_dir(ctx)
+            .join(".openshift_install_state.json")
+            .exists();
         // Only (re)write install-config for a genuinely fresh attempt — not when
         // resuming an in-progress install or when it already completed.
         if !complete && !started && !kubeconfig_path(ctx).exists() {
@@ -1593,7 +1736,8 @@ fn is_valid_cluster_name(name: &str) -> bool {
     let all_valid = name
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.');
-    let alnum = |c: Option<char>| matches!(c, Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit());
+    let alnum =
+        |c: Option<char>| matches!(c, Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit());
     all_valid && alnum(name.chars().next()) && alnum(name.chars().last())
 }
 
@@ -1608,7 +1752,11 @@ async fn preflight_check(
 ) -> Result<(), String> {
     match ctx.run_with_env(program, args, env).await {
         Ok(out) if out.success() => Ok(()),
-        Ok(out) => Err(format!("{what} failed (exit {}): {}", out.status, out.stderr.trim())),
+        Ok(out) => Err(format!(
+            "{what} failed (exit {}): {}",
+            out.status,
+            out.stderr.trim()
+        )),
         Err(e) => Err(format!("{what}: could not run `{program}`: {e}")),
     }
 }
@@ -1617,7 +1765,11 @@ async fn preflight_check(
 /// secrets (entered in the UI). Empty when the user relies on `~/.aws` instead.
 fn aws_env(ctx: &StepContext) -> Vec<(String, String)> {
     let mut env = Vec::new();
-    for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"] {
+    for key in [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ] {
         if let Some(v) = ctx.secret(key).filter(|v| !v.is_empty()) {
             env.push((key.to_string(), v.to_string()));
         }
@@ -1632,7 +1784,11 @@ fn aws_env(ctx: &StepContext) -> Vec<(String, String)> {
 async fn aws_preflight(ctx: &StepContext) -> StepOutcome {
     let env = aws_env(ctx);
     let checks = [
-        ("openshift-install", vec!["version".to_string()], "openshift-install availability"),
+        (
+            "openshift-install",
+            vec!["version".to_string()],
+            "openshift-install availability",
+        ),
         ("aws", vec!["--version".to_string()], "aws CLI availability"),
         (
             "aws",
@@ -1695,7 +1851,11 @@ fn parse_delegation_ns(json: &str) -> Vec<String> {
                 .and_then(|n| n.as_array())
                 .cloned()
         })
-        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -1713,7 +1873,10 @@ fn find_parent_zone(zones: &[(String, String)], base: &str) -> Option<(String, S
 /// A Route53 change-batch (JSON) that UPSERTs an NS record delegating `base` to
 /// `ns` in the parent zone.
 fn ns_change_batch(base: &str, ns: &[String]) -> String {
-    let records: Vec<String> = ns.iter().map(|n| format!("{{\"Value\":\"{n}\"}}")).collect();
+    let records: Vec<String> = ns
+        .iter()
+        .map(|n| format!("{{\"Value\":\"{n}\"}}"))
+        .collect();
     format!(
         "{{\"Changes\":[{{\"Action\":\"UPSERT\",\"ResourceRecordSet\":\
          {{\"Name\":\"{base}\",\"Type\":\"NS\",\"TTL\":300,\"ResourceRecords\":[{}]}}}}]}}",
@@ -1731,47 +1894,56 @@ async fn aws_create_zone(
     zones: &[(String, String)],
     env: &[(String, String)],
 ) -> StepOutcome {
-        ctx.log(format!("creating Route53 hosted zone for {base}"));
-        let caller_ref = format!("wxd-{}-{base}", ctx.run_id);
-        let create = ctx.run_with_env(
-                "aws",
-                &[
-                    "route53".into(),
-                    "create-hosted-zone".into(),
-                    "--name".into(),
-                    base.to_string(),
-                    "--caller-reference".into(),
-                    caller_ref,
-                    "--output".into(),
-                    "json".into(),
-                ],
-                env,
-            )
-            .await;
-        let out = match create {
-            Ok(o) if o.success() => o,
-            Ok(o) => {
-                return StepOutcome::Failed {
-                    error: format!("create-hosted-zone failed (exit {}): {}", o.status, o.stderr.trim()),
-                    next_steps: vec!["Check Route53 permissions (route53:CreateHostedZone), then retry.".into()],
-                }
-            }
-            Err(e) => {
-                return StepOutcome::Failed {
-                    error: format!("could not run aws route53 create-hosted-zone: {e}"),
-                    next_steps: vec!["Ensure the aws CLI is installed (Prerequisites), then retry.".into()],
-                }
-            }
-        };
-        let ns = parse_delegation_ns(&out.stdout);
-        if ns.is_empty() {
+    ctx.log(format!("creating Route53 hosted zone for {base}"));
+    let caller_ref = format!("wxd-{}-{base}", ctx.run_id);
+    let create = ctx
+        .run_with_env(
+            "aws",
+            &[
+                "route53".into(),
+                "create-hosted-zone".into(),
+                "--name".into(),
+                base.to_string(),
+                "--caller-reference".into(),
+                caller_ref,
+                "--output".into(),
+                "json".into(),
+            ],
+            env,
+        )
+        .await;
+    let out = match create {
+        Ok(o) if o.success() => o,
+        Ok(o) => {
             return StepOutcome::Failed {
-                error: "created the zone but could not read its name servers".to_string(),
-                next_steps: vec!["Inspect the new hosted zone in the Route53 console.".into()],
-            };
+                error: format!(
+                    "create-hosted-zone failed (exit {}): {}",
+                    o.status,
+                    o.stderr.trim()
+                ),
+                next_steps: vec![
+                    "Check Route53 permissions (route53:CreateHostedZone), then retry.".into(),
+                ],
+            }
         }
+        Err(e) => {
+            return StepOutcome::Failed {
+                error: format!("could not run aws route53 create-hosted-zone: {e}"),
+                next_steps: vec![
+                    "Ensure the aws CLI is installed (Prerequisites), then retry.".into(),
+                ],
+            }
+        }
+    };
+    let ns = parse_delegation_ns(&out.stdout);
+    if ns.is_empty() {
+        return StepOutcome::Failed {
+            error: "created the zone but could not read its name servers".to_string(),
+            next_steps: vec!["Inspect the new hosted zone in the Route53 console.".into()],
+        };
+    }
 
-        match find_parent_zone(zones, base) {
+    match find_parent_zone(zones, base) {
             Some((parent_name, parent_id)) => {
                 ctx.log(format!("delegating {base} under parent zone {parent_name}"));
                 let batch = ns_change_batch(base, &ns);
@@ -1833,70 +2005,87 @@ async fn aws_create_zone(
                 ],
             },
         }
-    }
+}
 
 /// AWS: ensure the base domain is a usable public Route53 hosted zone — validate
 /// it exists, or (when opted in) create it and auto-delegate for a subdomain.
 async fn aws_ensure_dns(ctx: &StepContext) -> StepOutcome {
-        let base = match ctx.input("base_domain").filter(|d| !d.is_empty()) {
-            Some(d) => d.trim_end_matches('.').to_string(),
-            None => {
-                return StepOutcome::Failed {
-                    error: "base_domain is required".to_string(),
-                    next_steps: vec!["Re-run the cluster-spec step and supply a base domain.".into()],
-                }
+    let base = match ctx.input("base_domain").filter(|d| !d.is_empty()) {
+        Some(d) => d.trim_end_matches('.').to_string(),
+        None => {
+            return StepOutcome::Failed {
+                error: "base_domain is required".to_string(),
+                next_steps: vec!["Re-run the cluster-spec step and supply a base domain.".into()],
             }
-        };
-        let env = aws_env(ctx);
-        ctx.log(format!("checking Route53 for a public hosted zone matching {base}"));
-        let listing = ctx.run_with_env(
-                "aws",
-                &["route53".into(), "list-hosted-zones".into(), "--output".into(), "json".into()],
-                &env,
-            )
-            .await;
-        let zones = match listing {
-            Ok(o) if o.success() => parse_public_zones(&o.stdout),
-            // Couldn't list (e.g. limited IAM) — don't hard-block; let
-            // openshift-install be the source of truth.
-            Ok(o) => {
-                ctx.log(format!(
-                    "warning: could not list Route53 zones (exit {}): {} — skipping DNS check",
-                    o.status,
-                    o.stderr.trim()
-                ));
-                return StepOutcome::Completed;
-            }
-            Err(e) => {
-                ctx.log(format!("warning: could not run aws route53: {e} — skipping DNS check"));
-                return StepOutcome::Completed;
-            }
-        };
-
-        let want = format!("{base}.");
-        if zones.iter().any(|(n, _)| n == &want) {
-            ctx.log(format!("base domain '{base}' is an existing public hosted zone"));
-            ctx.progress(100);
+        }
+    };
+    let env = aws_env(ctx);
+    ctx.log(format!(
+        "checking Route53 for a public hosted zone matching {base}"
+    ));
+    let listing = ctx
+        .run_with_env(
+            "aws",
+            &[
+                "route53".into(),
+                "list-hosted-zones".into(),
+                "--output".into(),
+                "json".into(),
+            ],
+            &env,
+        )
+        .await;
+    let zones = match listing {
+        Ok(o) if o.success() => parse_public_zones(&o.stdout),
+        // Couldn't list (e.g. limited IAM) — don't hard-block; let
+        // openshift-install be the source of truth.
+        Ok(o) => {
+            ctx.log(format!(
+                "warning: could not list Route53 zones (exit {}): {} — skipping DNS check",
+                o.status,
+                o.stderr.trim()
+            ));
             return StepOutcome::Completed;
         }
+        Err(e) => {
+            ctx.log(format!(
+                "warning: could not run aws route53: {e} — skipping DNS check"
+            ));
+            return StepOutcome::Completed;
+        }
+    };
 
-        let opt_in = matches!(ctx.input("create_base_domain_zone"), Some(v) if v.eq_ignore_ascii_case("true"));
-        if !opt_in {
-            let listing = if zones.is_empty() {
-                "(no public hosted zones found in this account)".to_string()
-            } else {
-                zones.iter().map(|(n, _)| n.trim_end_matches('.').to_string()).collect::<Vec<_>>().join(", ")
-            };
-            return StepOutcome::Failed {
+    let want = format!("{base}.");
+    if zones.iter().any(|(n, _)| n == &want) {
+        ctx.log(format!(
+            "base domain '{base}' is an existing public hosted zone"
+        ));
+        ctx.progress(100);
+        return StepOutcome::Completed;
+    }
+
+    let opt_in =
+        matches!(ctx.input("create_base_domain_zone"), Some(v) if v.eq_ignore_ascii_case("true"));
+    if !opt_in {
+        let listing = if zones.is_empty() {
+            "(no public hosted zones found in this account)".to_string()
+        } else {
+            zones
+                .iter()
+                .map(|(n, _)| n.trim_end_matches('.').to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return StepOutcome::Failed {
                 error: format!("'{base}' is not a public Route53 hosted zone in this account"),
                 next_steps: vec![
                     format!("Use one of your existing public hosted zones as the base domain: {listing}"),
                     "…or enable \"Create the base-domain hosted zone if missing\" in the cluster spec and retry.".into(),
                 ],
             };
-        }
+    }
 
-        aws_create_zone(ctx, &base, &zones, &env).await
+    aws_create_zone(ctx, &base, &zones, &env).await
 }
 
 /// Render and write `install-config.yaml` into the cluster dir.
@@ -1958,14 +2147,18 @@ fn write_install_config(ctx: &StepContext) -> Result<std::path::PathBuf, StepOut
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return Err(StepOutcome::Failed {
             error: format!("could not create cluster dir {}: {e}", dir.display()),
-            next_steps: vec!["Check filesystem permissions for the artifacts directory.".to_string()],
+            next_steps: vec![
+                "Check filesystem permissions for the artifacts directory.".to_string()
+            ],
         });
     }
     let path = dir.join("install-config.yaml");
     if let Err(e) = std::fs::write(&path, config) {
         return Err(StepOutcome::Failed {
             error: format!("could not write {}: {e}", path.display()),
-            next_steps: vec!["Check filesystem permissions for the artifacts directory.".to_string()],
+            next_steps: vec![
+                "Check filesystem permissions for the artifacts directory.".to_string()
+            ],
         });
     }
     ctx.log(format!("wrote install-config.yaml to {}", path.display()));
@@ -2023,7 +2216,9 @@ mod tests {
 
     /// A cluster-spec step backed by the default (AWS) provisioner registry.
     fn cluster_spec() -> ClusterSpecStep {
-        ClusterSpecStep { reg: std::sync::Arc::new(ProvisionerRegistry::new()) }
+        ClusterSpecStep {
+            reg: std::sync::Arc::new(ProvisionerRegistry::new()),
+        }
     }
 
     #[tokio::test]
@@ -2079,23 +2274,45 @@ mod tests {
         let ps_file = dir.join("my-pull-secret.json");
         std::fs::write(&ps_file, "{\"auths\":{\"x\":{}}}\n").unwrap();
         let mut inputs = full_spec_inputs();
-        inputs.insert("pull_secret_path".into(), ps_file.to_string_lossy().into_owned());
+        inputs.insert(
+            "pull_secret_path".into(),
+            ps_file.to_string_lossy().into_owned(),
+        );
 
-        let ctx = ctx_with(Arc::new(MockCommandRunner::new(vec![])), inputs, BTreeMap::new(), dir.clone());
-        assert!(write_install_config(&ctx).is_ok(), "file-based pull secret should resolve");
+        let ctx = ctx_with(
+            Arc::new(MockCommandRunner::new(vec![])),
+            inputs,
+            BTreeMap::new(),
+            dir.clone(),
+        );
+        assert!(
+            write_install_config(&ctx).is_ok(),
+            "file-based pull secret should resolve"
+        );
         let written =
             std::fs::read_to_string(dir.join("cluster").join("install-config.yaml")).unwrap();
-        assert!(written.contains("\"auths\":{\"x\":{}}"), "file pull secret not embedded: {written}");
+        assert!(
+            written.contains("\"auths\":{\"x\":{}}"),
+            "file pull secret not embedded: {written}"
+        );
     }
 
     #[tokio::test]
     async fn missing_pull_secret_prompts_for_paste_or_path() {
         let dir = temp_dir("ps-none");
-        let ctx = ctx_with(Arc::new(MockCommandRunner::new(vec![])), full_spec_inputs(), BTreeMap::new(), dir);
+        let ctx = ctx_with(
+            Arc::new(MockCommandRunner::new(vec![])),
+            full_spec_inputs(),
+            BTreeMap::new(),
+            dir,
+        );
         match write_install_config(&ctx) {
             Err(StepOutcome::NeedsInput { fields, .. }) => {
                 let keys: Vec<_> = fields.iter().map(|f| f.key.as_str()).collect();
-                assert!(keys.contains(&"pull_secret") && keys.contains(&"pull_secret_path"), "got {keys:?}");
+                assert!(
+                    keys.contains(&"pull_secret") && keys.contains(&"pull_secret_path"),
+                    "got {keys:?}"
+                );
             }
             other => panic!("expected NeedsInput offering both, got {other:?}"),
         }
@@ -2117,31 +2334,55 @@ mod tests {
 
         let written =
             std::fs::read_to_string(dir.join("cluster").join("install-config.yaml")).unwrap();
-        assert!(written.contains("region: us-west-2"), "region missing: {written}");
-        assert!(written.contains("type: m6i.2xlarge"), "control plane type missing");
+        assert!(
+            written.contains("region: us-west-2"),
+            "region missing: {written}"
+        );
+        assert!(
+            written.contains("type: m6i.2xlarge"),
+            "control plane type missing"
+        );
         assert!(written.contains("type: m6i.4xlarge"), "worker type missing");
         assert!(written.contains("baseDomain: example.com"));
         assert!(written.contains("pullSecret"));
         // Every resource is tagged with the user-provided name + extra tags.
         // AWS reserves the `Name` key, so we use `cluster-name`.
-        assert!(written.contains("userTags:"), "userTags block missing: {written}");
-        assert!(written.contains("cluster-name: 'wxd-test'"), "cluster-name tag missing: {written}");
-        assert!(!written.contains("\n      Name:"), "reserved Name tag must not appear: {written}");
-        assert!(written.contains("owner: 'qa'"), "extra tag missing: {written}");
+        assert!(
+            written.contains("userTags:"),
+            "userTags block missing: {written}"
+        );
+        assert!(
+            written.contains("cluster-name: 'wxd-test'"),
+            "cluster-name tag missing: {written}"
+        );
+        assert!(
+            !written.contains("\n      Name:"),
+            "reserved Name tag must not appear: {written}"
+        );
+        assert!(
+            written.contains("owner: 'qa'"),
+            "extra tag missing: {written}"
+        );
     }
 
     #[test]
     fn parse_tags_handles_blanks_and_pairs() {
         assert_eq!(
             parse_tags("owner=qa, project=wxd , =bad, nokeyval, "),
-            vec![("owner".to_string(), "qa".to_string()), ("project".to_string(), "wxd".to_string())]
+            vec![
+                ("owner".to_string(), "qa".to_string()),
+                ("project".to_string(), "wxd".to_string())
+            ]
         );
     }
 
     #[test]
     fn build_user_tags_uses_non_reserved_key_and_drops_reserved() {
         let tags = build_user_tags("my-cluster", "owner=qa,Name=nope,kubernetes.io/x=y");
-        assert_eq!(tags[0], ("cluster-name".to_string(), "my-cluster".to_string()));
+        assert_eq!(
+            tags[0],
+            ("cluster-name".to_string(), "my-cluster".to_string())
+        );
         assert!(tags.contains(&("owner".to_string(), "qa".to_string())));
         // Reserved keys are excluded.
         assert!(!tags.iter().any(|(k, _)| k.eq_ignore_ascii_case("Name")));
@@ -2160,7 +2401,10 @@ mod tests {
             zones,
             vec![
                 ("ocpcpdtest.com.".to_string(), "/hostedzone/Z1".to_string()),
-                ("ibm-cpd-partnerships.com.".to_string(), "/hostedzone/Z3".to_string()),
+                (
+                    "ibm-cpd-partnerships.com.".to_string(),
+                    "/hostedzone/Z3".to_string()
+                ),
             ]
         );
     }
@@ -2181,8 +2425,12 @@ mod tests {
 
     #[test]
     fn parse_delegation_ns_reads_name_servers() {
-        let json = r#"{"DelegationSet":{"NameServers":["ns-1.awsdns-01.com","ns-2.awsdns-02.net"]}}"#;
-        assert_eq!(parse_delegation_ns(json), vec!["ns-1.awsdns-01.com", "ns-2.awsdns-02.net"]);
+        let json =
+            r#"{"DelegationSet":{"NameServers":["ns-1.awsdns-01.com","ns-2.awsdns-02.net"]}}"#;
+        assert_eq!(
+            parse_delegation_ns(json),
+            vec!["ns-1.awsdns-01.com", "ns-2.awsdns-02.net"]
+        );
     }
 
     fn r53_list(zones_json: &str) -> MockResponse {
@@ -2210,7 +2458,9 @@ mod tests {
         match aws_ensure_dns(&ctx).await {
             StepOutcome::Failed { next_steps, .. } => {
                 assert!(next_steps.iter().any(|s| s.contains("ocpcpdtest.com")));
-                assert!(next_steps.iter().any(|s| s.contains("Create the base-domain")));
+                assert!(next_steps
+                    .iter()
+                    .any(|s| s.contains("Create the base-domain")));
             }
             o => panic!("expected Failed, got {o:?}"),
         }
@@ -2223,15 +2473,28 @@ mod tests {
         inputs.insert("base_domain".into(), "wxd.ocpcpdtest.com".into());
         inputs.insert("create_base_domain_zone".into(), "true".into());
         let runner = Arc::new(MockCommandRunner::new(vec![
-            r53_list(r#"{"HostedZones":[{"Name":"ocpcpdtest.com.","Id":"/hostedzone/ZPARENT","Config":{"PrivateZone":false}}]}"#),
-            MockResponse::ok("create-hosted-zone", r#"{"DelegationSet":{"NameServers":["ns-1.awsdns-01.com","ns-2.awsdns-02.net"]}}"#),
+            r53_list(
+                r#"{"HostedZones":[{"Name":"ocpcpdtest.com.","Id":"/hostedzone/ZPARENT","Config":{"PrivateZone":false}}]}"#,
+            ),
+            MockResponse::ok(
+                "create-hosted-zone",
+                r#"{"DelegationSet":{"NameServers":["ns-1.awsdns-01.com","ns-2.awsdns-02.net"]}}"#,
+            ),
             MockResponse::ok("change-resource-record-sets", "{}"),
         ]));
         let ctx = ctx_with(runner.clone(), inputs, BTreeMap::new(), dir);
         assert_eq!(aws_ensure_dns(&ctx).await, StepOutcome::Completed);
         let calls = runner.calls();
-        assert!(calls.iter().any(|c| c.contains("create-hosted-zone")), "{calls:?}");
-        assert!(calls.iter().any(|c| c.contains("change-resource-record-sets")), "{calls:?}");
+        assert!(
+            calls.iter().any(|c| c.contains("create-hosted-zone")),
+            "{calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("change-resource-record-sets")),
+            "{calls:?}"
+        );
     }
 
     #[tokio::test]
@@ -2241,8 +2504,13 @@ mod tests {
         inputs.insert("base_domain".into(), "swwxdinstallpractice.com".into());
         inputs.insert("create_base_domain_zone".into(), "true".into());
         let runner = Arc::new(MockCommandRunner::new(vec![
-            r53_list(r#"{"HostedZones":[{"Name":"ocpcpdtest.com.","Id":"/hostedzone/Z1","Config":{"PrivateZone":false}}]}"#),
-            MockResponse::ok("create-hosted-zone", r#"{"DelegationSet":{"NameServers":["ns-9.awsdns-09.org"]}}"#),
+            r53_list(
+                r#"{"HostedZones":[{"Name":"ocpcpdtest.com.","Id":"/hostedzone/Z1","Config":{"PrivateZone":false}}]}"#,
+            ),
+            MockResponse::ok(
+                "create-hosted-zone",
+                r#"{"DelegationSet":{"NameServers":["ns-9.awsdns-09.org"]}}"#,
+            ),
         ]));
         let ctx = ctx_with(runner, inputs, BTreeMap::new(), dir);
         match aws_ensure_dns(&ctx).await {
@@ -2262,7 +2530,10 @@ mod tests {
         assert!(!is_valid_cluster_name("WXD")); // uppercase
         assert!(!is_valid_cluster_name("-wxd")); // leading dash
         assert!(!is_valid_cluster_name(""));
-        assert_eq!(sanitize_cluster_name("sw_wxd_install_prac_auto1"), "sw-wxd-install-prac-auto1");
+        assert_eq!(
+            sanitize_cluster_name("sw_wxd_install_prac_auto1"),
+            "sw-wxd-install-prac-auto1"
+        );
     }
 
     #[tokio::test]
@@ -2294,10 +2565,16 @@ mod tests {
         let mut secrets = BTreeMap::new();
         secrets.insert("pull_secret".to_string(), "{\"auths\":{}}".to_string());
         let ctx = ctx_with(runner.clone(), full_spec_inputs(), secrets, dir);
-        assert_eq!(CreateClusterStep::new().run(&ctx).await, StepOutcome::Completed);
+        assert_eq!(
+            CreateClusterStep::new().run(&ctx).await,
+            StepOutcome::Completed
+        );
         // Confirm the work went through the runner.
         assert!(
-            runner.calls().iter().any(|c| c.contains("openshift-install create cluster")),
+            runner
+                .calls()
+                .iter()
+                .any(|c| c.contains("openshift-install create cluster")),
             "expected openshift-install invocation, got {:?}",
             runner.calls()
         );
@@ -2313,13 +2590,11 @@ mod tests {
         std::fs::write(cluster.join(".wxd_install_complete"), "ok\n").unwrap();
 
         let runner = Arc::new(MockCommandRunner::new(vec![]));
-        let ctx = ctx_with(
-            runner.clone(),
-            full_spec_inputs(),
-            BTreeMap::new(),
-            dir,
+        let ctx = ctx_with(runner.clone(), full_spec_inputs(), BTreeMap::new(), dir);
+        assert_eq!(
+            CreateClusterStep::new().run(&ctx).await,
+            StepOutcome::Completed
         );
-        assert_eq!(CreateClusterStep::new().run(&ctx).await, StepOutcome::Completed);
         // Idempotent skip: the installer must NOT have been invoked.
         assert!(
             runner.calls().is_empty(),
@@ -2341,10 +2616,15 @@ mod tests {
 
         let runner = Arc::new(MockCommandRunner::new(vec![]));
         let ctx = ctx_with(runner.clone(), full_spec_inputs(), BTreeMap::new(), dir);
-        assert_eq!(CreateClusterStep::new().run(&ctx).await, StepOutcome::Completed);
+        assert_eq!(
+            CreateClusterStep::new().run(&ctx).await,
+            StepOutcome::Completed
+        );
         let calls = runner.calls();
         assert!(
-            calls.iter().any(|c| c.contains("wait-for install-complete")),
+            calls
+                .iter()
+                .any(|c| c.contains("wait-for install-complete")),
             "expected wait-for resume, got {calls:?}"
         );
         assert!(
@@ -2429,8 +2709,18 @@ mod tests {
     #[test]
     fn install_config_embeds_root_volume_sizes() {
         let cfg = render_install_config(
-            "wxd", "example.com", "us-east-2", "m6i.2xlarge", "3", "350", "m6i.4xlarge", "3", "400",
-            "{}", None, &[],
+            "wxd",
+            "example.com",
+            "us-east-2",
+            "m6i.2xlarge",
+            "3",
+            "350",
+            "m6i.4xlarge",
+            "3",
+            "400",
+            "{}",
+            None,
+            &[],
         );
         // Worker rootVolume under the compute pool, control-plane under controlPlane.
         assert!(cfg.contains("      rootVolume:\n        size: 400\n        type: gp3\n"));
@@ -2438,35 +2728,65 @@ mod tests {
         // Blocks sit inside the right pools (worker size before controlPlane:).
         let worker_idx = cfg.find("size: 400").unwrap();
         let cp_key_idx = cfg.find("controlPlane:").unwrap();
-        assert!(worker_idx < cp_key_idx, "worker rootVolume must be in the compute pool");
+        assert!(
+            worker_idx < cp_key_idx,
+            "worker rootVolume must be in the compute pool"
+        );
     }
 
     #[test]
     fn install_config_omits_root_volume_when_blank() {
         let cfg = render_install_config(
-            "wxd", "example.com", "us-east-2", "m6i.2xlarge", "3", "", "m6i.4xlarge", "3", "",
-            "{}", None, &[],
+            "wxd",
+            "example.com",
+            "us-east-2",
+            "m6i.2xlarge",
+            "3",
+            "",
+            "m6i.4xlarge",
+            "3",
+            "",
+            "{}",
+            None,
+            &[],
         );
-        assert!(!cfg.contains("rootVolume"), "no rootVolume block when size is blank");
+        assert!(
+            !cfg.contains("rootVolume"),
+            "no rootVolume block when size is blank"
+        );
     }
 
     #[test]
     fn parse_arn_handles_both_shapes() {
         // Slash form: arn:aws:ec2:<region>:<acct>:natgateway/<id>
         let (s, t, id) = parse_arn("arn:aws:ec2:us-east-1:123456789012:natgateway/nat-0abc");
-        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("ec2", "natgateway", "nat-0abc"));
+        assert_eq!(
+            (s.as_str(), t.as_str(), id.as_str()),
+            ("ec2", "natgateway", "nat-0abc")
+        );
 
         // Slash form: instance
-        let (s, t, id) = parse_arn("arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0");
-        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("ec2", "instance", "i-0123456789abcdef0"));
+        let (s, t, id) =
+            parse_arn("arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0");
+        assert_eq!(
+            (s.as_str(), t.as_str(), id.as_str()),
+            ("ec2", "instance", "i-0123456789abcdef0")
+        );
 
         // Slash form: security-group
         let (s, t, id) = parse_arn("arn:aws:ec2:us-east-1:123456789012:security-group/sg-0abc");
-        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("ec2", "security-group", "sg-0abc"));
+        assert_eq!(
+            (s.as_str(), t.as_str(), id.as_str()),
+            ("ec2", "security-group", "sg-0abc")
+        );
 
         // Colon form: elasticfilesystem:...:file-system:<id>
-        let (s, t, id) = parse_arn("arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-0abc");
-        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("elasticfilesystem", "file-system", "fs-0abc"));
+        let (s, t, id) =
+            parse_arn("arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-0abc");
+        assert_eq!(
+            (s.as_str(), t.as_str(), id.as_str()),
+            ("elasticfilesystem", "file-system", "fs-0abc")
+        );
 
         // RDS uses the colon separator: arn:aws:rds:<region>:<acct>:db:<id>
         let (s, t, id) = parse_arn("arn:aws:rds:us-east-1:123456789012:db:mydb");
@@ -2474,15 +2794,40 @@ mod tests {
 
         // No separator (e.g. S3 bucket) — whole resource is the id.
         let (s, t, id) = parse_arn("arn:aws:s3:::my-bucket");
-        assert_eq!((s.as_str(), t.as_str(), id.as_str()), ("s3", "", "my-bucket"));
+        assert_eq!(
+            (s.as_str(), t.as_str(), id.as_str()),
+            ("s3", "", "my-bucket")
+        );
     }
 
     #[test]
     fn billable_classifier_flags_cost_bearing_types() {
-        for t in ["instance", "natgateway", "elastic-ip", "eip", "address", "load-balancer", "elb", "elbv2", "volume", "file-system", "efs", "db", "rds", "fsx"] {
+        for t in [
+            "instance",
+            "natgateway",
+            "elastic-ip",
+            "eip",
+            "address",
+            "load-balancer",
+            "elb",
+            "elbv2",
+            "volume",
+            "file-system",
+            "efs",
+            "db",
+            "rds",
+            "fsx",
+        ] {
             assert!(is_billable(t), "{t} should be billable");
         }
-        for t in ["security-group", "subnet", "vpc", "route-table", "internet-gateway", ""] {
+        for t in [
+            "security-group",
+            "subnet",
+            "vpc",
+            "route-table",
+            "internet-gateway",
+            "",
+        ] {
             assert!(!is_billable(t), "{t} should NOT be billable");
         }
     }
@@ -2505,7 +2850,11 @@ mod tests {
     fn write_metadata(dir: &std::path::Path, infra: &str) {
         let cluster = dir.join("cluster");
         std::fs::create_dir_all(&cluster).unwrap();
-        std::fs::write(cluster.join("metadata.json"), format!("{{\"infraID\":\"{infra}\"}}")).unwrap();
+        std::fs::write(
+            cluster.join("metadata.json"),
+            format!("{{\"infraID\":\"{infra}\"}}"),
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -2528,28 +2877,56 @@ mod tests {
             // Second tag key — nothing.
             MockResponse::ok("get-resources", r#"{"ResourceTagMappingList":[]}"#),
         ]));
-        let ctx = ctx_with(runner.clone(), full_spec_inputs(), BTreeMap::new(), dir.clone());
+        let ctx = ctx_with(
+            runner.clone(),
+            full_spec_inputs(),
+            BTreeMap::new(),
+            dir.clone(),
+        );
 
-        assert_eq!(AwsProvisioner::new().destroy(&ctx).await, StepOutcome::Completed);
+        assert_eq!(
+            AwsProvisioner::new().destroy(&ctx).await,
+            StepOutcome::Completed
+        );
 
         // The report artifact exists and flags the natgateway as billable.
         let report = std::fs::read_to_string(dir.join("destroy-report.txt")).unwrap();
-        assert!(report.contains("REMAINING [BILLABLE] ec2/natgateway nat-1"), "report: {report}");
-        assert!(report.contains("REMAINING ec2/security-group sg-1"), "report: {report}");
-        assert!(report.contains("2 resource(s) still tagged"), "report: {report}");
+        assert!(
+            report.contains("REMAINING [BILLABLE] ec2/natgateway nat-1"),
+            "report: {report}"
+        );
+        assert!(
+            report.contains("REMAINING ec2/security-group sg-1"),
+            "report: {report}"
+        );
+        assert!(
+            report.contains("2 resource(s) still tagged"),
+            "report: {report}"
+        );
         assert!(report.contains("1 billable"), "report: {report}");
 
         // The structured JSON report is also written.
-        let json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join("destroy-report.json")).unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("destroy-report.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(json["infra_id"], "cl-abc12");
         assert_eq!(json["remaining"].as_array().unwrap().len(), 2);
 
         // EFS teardown ran before the cluster destroy.
         let calls = runner.calls();
-        let efs_pos = calls.iter().position(|c| c.contains("efs describe-file-systems")).unwrap();
-        let destroy_pos = calls.iter().position(|c| c.contains("destroy cluster")).unwrap();
-        assert!(efs_pos < destroy_pos, "EFS teardown must precede cluster destroy: {calls:?}");
+        let efs_pos = calls
+            .iter()
+            .position(|c| c.contains("efs describe-file-systems"))
+            .unwrap();
+        let destroy_pos = calls
+            .iter()
+            .position(|c| c.contains("destroy cluster"))
+            .unwrap();
+        assert!(
+            efs_pos < destroy_pos,
+            "EFS teardown must precede cluster destroy: {calls:?}"
+        );
     }
 
     #[tokio::test]
@@ -2564,12 +2941,17 @@ mod tests {
         ]));
         let ctx = ctx_with(runner, full_spec_inputs(), BTreeMap::new(), dir.clone());
         match AwsProvisioner::new().destroy(&ctx).await {
-            StepOutcome::Failed { error, .. } => assert!(error.contains("dependency violation"), "{error}"),
+            StepOutcome::Failed { error, .. } => {
+                assert!(error.contains("dependency violation"), "{error}")
+            }
             o => panic!("expected Failed, got {o:?}"),
         }
         // Report is still written even on destroy failure.
         let report = std::fs::read_to_string(dir.join("destroy-report.txt")).unwrap();
-        assert!(report.contains("all tagged resources deleted"), "report: {report}");
+        assert!(
+            report.contains("all tagged resources deleted"),
+            "report: {report}"
+        );
     }
 
     #[tokio::test]
@@ -2578,9 +2960,15 @@ mod tests {
         write_metadata(&dir, "cl-efs01");
         let runner = Arc::new(MockCommandRunner::new(vec![
             // describe-file-systems → one filesystem
-            MockResponse::ok("efs describe-file-systems", "{\"FileSystems\":[{\"FileSystemId\":\"fs-9\"}]}"),
+            MockResponse::ok(
+                "efs describe-file-systems",
+                "{\"FileSystems\":[{\"FileSystemId\":\"fs-9\"}]}",
+            ),
             // describe-mount-targets → one mount target
-            MockResponse::ok("efs describe-mount-targets", "{\"MountTargets\":[{\"MountTargetId\":\"fsmt-1\"}]}"),
+            MockResponse::ok(
+                "efs describe-mount-targets",
+                "{\"MountTargets\":[{\"MountTargetId\":\"fsmt-1\"}]}",
+            ),
             // delete-mount-target
             MockResponse::ok("efs delete-mount-target", "{}"),
             // re-poll describe-mount-targets → now empty
@@ -2594,10 +2982,23 @@ mod tests {
             MockResponse::ok("get-resources", r#"{"ResourceTagMappingList":[]}"#),
         ]));
         let ctx = ctx_with(runner.clone(), full_spec_inputs(), BTreeMap::new(), dir);
-        assert_eq!(AwsProvisioner::new().destroy(&ctx).await, StepOutcome::Completed);
+        assert_eq!(
+            AwsProvisioner::new().destroy(&ctx).await,
+            StepOutcome::Completed
+        );
         let calls = runner.calls();
-        assert!(calls.iter().any(|c| c.contains("efs delete-mount-target --mount-target-id fsmt-1")), "{calls:?}");
-        assert!(calls.iter().any(|c| c.contains("efs delete-file-system --file-system-id fs-9")), "{calls:?}");
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("efs delete-mount-target --mount-target-id fsmt-1")),
+            "{calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("efs delete-file-system --file-system-id fs-9")),
+            "{calls:?}"
+        );
     }
 
     #[test]
@@ -2617,13 +3018,23 @@ mod tests {
         let dir = temp_dir("api-fqdn-partial");
         let mut inputs = full_spec_inputs();
         inputs.insert("base_domain".into(), "example.com.".into());
-        let ctx = ctx_with(Arc::new(MockCommandRunner::new(vec![])), inputs, BTreeMap::new(), dir.clone());
+        let ctx = ctx_with(
+            Arc::new(MockCommandRunner::new(vec![])),
+            inputs,
+            BTreeMap::new(),
+            dir.clone(),
+        );
         assert_eq!(api_fqdn(&ctx).as_deref(), Some("api.wxd-test.example.com"));
 
         // Missing base_domain → None.
         let mut only_name = BTreeMap::new();
         only_name.insert("cluster_name".into(), "wxd".into());
-        let ctx2 = ctx_with(Arc::new(MockCommandRunner::new(vec![])), only_name, BTreeMap::new(), dir);
+        let ctx2 = ctx_with(
+            Arc::new(MockCommandRunner::new(vec![])),
+            only_name,
+            BTreeMap::new(),
+            dir,
+        );
         assert_eq!(api_fqdn(&ctx2), None);
     }
 
@@ -2632,7 +3043,9 @@ mod tests {
         assert!(is_api_dns_failure(
             "dial tcp: lookup api.wxd.example.com on 1.1.1.1:53: no such host"
         ));
-        assert!(is_api_dns_failure("ERROR Failed waiting for Kubernetes API"));
+        assert!(is_api_dns_failure(
+            "ERROR Failed waiting for Kubernetes API"
+        ));
         // Case-insensitive.
         assert!(is_api_dns_failure("NO SUCH HOST"));
         // Unrelated failures are not misclassified.
@@ -2646,11 +3059,14 @@ mod tests {
         let info = r#"time="2026-06-30T00:00:00Z" level=info msg="Waiting up to 15m0s (until 1:15AM) for network infrastructure to become ready...""#;
         assert_eq!(
             extract_progress_line(info).as_deref(),
-            Some("Waiting up to 15m0s (until 1:15AM) for network infrastructure to become ready...")
+            Some(
+                "Waiting up to 15m0s (until 1:15AM) for network infrastructure to become ready..."
+            )
         );
 
         // A debug line → None (noise).
-        let debug = r#"time="2026-06-30T00:00:00Z" level=debug msg="Fetching Terraform Variables...""#;
+        let debug =
+            r#"time="2026-06-30T00:00:00Z" level=debug msg="Fetching Terraform Variables...""#;
         assert_eq!(extract_progress_line(debug), None);
 
         // A klog error line → None.
@@ -2680,7 +3096,11 @@ mod tests {
         let long_msg = "x".repeat(300);
         let raw = format!(r#"time="Z" level=info msg="{long_msg}""#);
         let out = extract_progress_line(&raw).unwrap();
-        assert_eq!(out.chars().count(), 140, "message should be truncated to 140 chars");
+        assert_eq!(
+            out.chars().count(),
+            140,
+            "message should be truncated to 140 chars"
+        );
     }
 
     #[test]
@@ -2712,8 +3132,14 @@ mod tests {
         );
         let joined = steps.join("\n");
         assert!(joined.contains("api.wxd-test.example.com"), "{joined}");
-        assert!(joined.contains("52.1.2.3 api.wxd-test.example.com"), "{joined}");
-        assert!(joined.contains("34.4.5.6 api.wxd-test.example.com"), "{joined}");
+        assert!(
+            joined.contains("52.1.2.3 api.wxd-test.example.com"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("34.4.5.6 api.wxd-test.example.com"),
+            "{joined}"
+        );
         assert!(joined.contains("/wxd-test/d' /etc/hosts"), "{joined}");
         assert!(joined.contains("killall -HUP mDNSResponder"), "{joined}");
     }
@@ -2722,7 +3148,10 @@ mod tests {
     fn dns_remediation_without_ips_falls_back_to_dig() {
         let steps = dns_remediation_next_steps("wxd-test", "api.wxd-test.example.com", &[]);
         let joined = steps.join("\n");
-        assert!(joined.contains("dig +short A api.wxd-test.example.com @8.8.8.8"), "{joined}");
+        assert!(
+            joined.contains("dig +short A api.wxd-test.example.com @8.8.8.8"),
+            "{joined}"
+        );
         assert!(joined.contains("killall -HUP mDNSResponder"), "{joined}");
     }
 
@@ -2753,9 +3182,18 @@ mod tests {
             StepOutcome::Failed { error, next_steps } => {
                 assert!(error.contains("no such host"), "error: {error}");
                 let joined = next_steps.join("\n");
-                assert!(joined.contains("could not resolve `api.wxd-test.example.com`"), "{joined}");
-                assert!(joined.contains("52.1.2.3 api.wxd-test.example.com"), "{joined}");
-                assert!(joined.contains("34.4.5.6 api.wxd-test.example.com"), "{joined}");
+                assert!(
+                    joined.contains("could not resolve `api.wxd-test.example.com`"),
+                    "{joined}"
+                );
+                assert!(
+                    joined.contains("52.1.2.3 api.wxd-test.example.com"),
+                    "{joined}"
+                );
+                assert!(
+                    joined.contains("34.4.5.6 api.wxd-test.example.com"),
+                    "{joined}"
+                );
             }
             other => panic!("expected Failed with DNS remediation, got {other:?}"),
         }

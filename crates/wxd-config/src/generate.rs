@@ -214,8 +214,9 @@ mod tests {
     fn render_emits_derived_vars_referencing_others() {
         let rendered = render(&full_config());
         assert!(rendered.contains("export SERVER_ARGUMENTS=\"--server=${OCP_URL}\""));
-        assert!(rendered
-            .contains("export OLM_UTILS_IMAGE=icr.io/cpopen/cpd/olm-utils-v4:${VERSION}"));
+        assert!(
+            rendered.contains("export OLM_UTILS_IMAGE=icr.io/cpopen/cpd/olm-utils-v4:${VERSION}")
+        );
         assert!(
             rendered.contains("export PROJECT_INST_BR_SVC=${PROJECT_CPD_INST_OPERATORS}-br-svc")
         );
@@ -226,6 +227,9 @@ mod tests {
         let rendered = render(&full_config());
         let last_collected = rendered.find("export COMPONENTS=").unwrap();
         let first_derived = rendered.find("export SERVER_ARGUMENTS=").unwrap();
-        assert!(first_derived > last_collected, "derived must come after collected");
+        assert!(
+            first_derived > last_collected,
+            "derived must come after collected"
+        );
     }
 }

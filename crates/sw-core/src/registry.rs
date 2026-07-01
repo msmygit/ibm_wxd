@@ -27,7 +27,9 @@ pub struct StepView {
 
 impl ModuleRegistry {
     pub fn new() -> Self {
-        Self { modules: Vec::new() }
+        Self {
+            modules: Vec::new(),
+        }
     }
 
     /// Append a module to the end of the execution order.

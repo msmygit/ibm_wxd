@@ -110,7 +110,11 @@ impl RunStore {
     }
 
     /// Persist secrets to `secrets.json` with `0600` perms. Overwrites wholesale.
-    pub fn save_secrets(&self, id: &str, secrets: &BTreeMap<String, String>) -> std::io::Result<()> {
+    pub fn save_secrets(
+        &self,
+        id: &str,
+        secrets: &BTreeMap<String, String>,
+    ) -> std::io::Result<()> {
         let dir = self.ensure_run_dir(id)?;
         let path = dir.join("secrets.json");
         let json = serde_json::to_string(secrets)?;
@@ -150,10 +154,9 @@ mod tests {
     fn temp_store() -> (RunStore, PathBuf) {
         // Unique-ish dir without Date/rand: use process id + addr of a local.
         let marker = format!("wxd-test-{}", std::process::id());
-        let dir = std::env::temp_dir().join(marker).join(format!(
-            "s{}",
-            &(stamp() as usize).to_string()
-        ));
+        let dir = std::env::temp_dir()
+            .join(marker)
+            .join(format!("s{}", &(stamp() as usize).to_string()));
         (RunStore::new(dir.clone()), dir)
     }
 
@@ -179,14 +182,30 @@ mod tests {
     fn events_append_and_replay_in_order() {
         let (store, dir) = temp_store();
         store
-            .append_event("r2", &Event::RunStatus { status: RunStatus::Running })
+            .append_event(
+                "r2",
+                &Event::RunStatus {
+                    status: RunStatus::Running,
+                },
+            )
             .unwrap();
         store
-            .append_event("r2", &Event::Log { step: "m/s".into(), line: "hi".into() })
+            .append_event(
+                "r2",
+                &Event::Log {
+                    step: "m/s".into(),
+                    line: "hi".into(),
+                },
+            )
             .unwrap();
         let events = store.replay_events("r2").unwrap();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0], Event::RunStatus { status: RunStatus::Running });
+        assert_eq!(
+            events[0],
+            Event::RunStatus {
+                status: RunStatus::Running
+            }
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 

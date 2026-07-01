@@ -45,9 +45,15 @@ pub enum StepOutcome {
     /// The step finished successfully.
     Completed,
     /// The step needs the user to supply named inputs before it can proceed.
-    NeedsInput { prompt: String, fields: Vec<InputField> },
+    NeedsInput {
+        prompt: String,
+        fields: Vec<InputField>,
+    },
     /// The step failed; carries a human error and actionable next steps.
-    Failed { error: String, next_steps: Vec<String> },
+    Failed {
+        error: String,
+        next_steps: Vec<String>,
+    },
 }
 
 /// A single input a step requests from the user when it returns `NeedsInput`.
@@ -151,10 +157,7 @@ mod tests {
 
     #[test]
     fn run_state_roundtrips_through_json() {
-        let mut run = RunState::new(
-            "abc".into(),
-            vec![StepState::new("m", "s1", "Step one")],
-        );
+        let mut run = RunState::new("abc".into(), vec![StepState::new("m", "s1", "Step one")]);
         run.inputs.insert("region".into(), "us-east-1".into());
         let json = serde_json::to_string(&run).unwrap();
         let back: RunState = serde_json::from_str(&json).unwrap();

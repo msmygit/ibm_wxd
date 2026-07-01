@@ -68,7 +68,11 @@ async fn auth(State(state): State<AppState>, req: Request, next: Next) -> Respon
 /// Extract the session token from the `x-wxd-token` header or a `token=` query
 /// param (the latter so the header-less `EventSource` can authenticate).
 fn token_from_request(req: &Request) -> Option<String> {
-    if let Some(v) = req.headers().get("x-wxd-token").and_then(|v| v.to_str().ok()) {
+    if let Some(v) = req
+        .headers()
+        .get("x-wxd-token")
+        .and_then(|v| v.to_str().ok())
+    {
         return Some(v.to_string());
     }
     req.uri().query().and_then(|q| {
@@ -96,13 +100,19 @@ fn err500(e: impl std::fmt::Display) -> Response {
 /// only read a dedicated `~/.ibm/IBM_ENTITLEMENT_KEY` file (never the Cloud API
 /// key, which `cp.icr.io` rejects). A value entered in the UI always wins.
 fn preload_known_secrets(store: &sw_core::RunStore, id: &str) {
-    let Some(home) = std::env::var_os("HOME") else { return };
-    let path = std::path::Path::new(&home).join(".ibm").join("IBM_ENTITLEMENT_KEY");
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let path = std::path::Path::new(&home)
+        .join(".ibm")
+        .join("IBM_ENTITLEMENT_KEY");
     if let Ok(contents) = std::fs::read_to_string(&path) {
         let key = contents.trim().to_string();
         if !key.is_empty() {
             let mut secrets = store.load_secrets(id).unwrap_or_default();
-            secrets.entry("IBM_ENTITLEMENT_KEY".to_string()).or_insert(key);
+            secrets
+                .entry("IBM_ENTITLEMENT_KEY".to_string())
+                .or_insert(key);
             let _ = store.save_secrets(id, &secrets);
         }
     }
@@ -235,7 +245,10 @@ async fn destroy_run(State(state): State<AppState>, Path(id): Path<String>) -> R
         let run = orch.store().load(&id).ok();
         let inputs = run.as_ref().map(|r| r.inputs.clone()).unwrap_or_default();
         let secrets = orch.store().load_secrets(&id).unwrap_or_default();
-        let provider = inputs.get("hyperscaler").cloned().unwrap_or_else(|| "aws".to_string());
+        let provider = inputs
+            .get("hyperscaler")
+            .cloned()
+            .unwrap_or_else(|| "aws".to_string());
         let artifacts = orch.store().artifacts_dir(&id);
         let ctx = sw_core::StepContext::with_artifacts(
             id.clone(),
@@ -246,7 +259,10 @@ async fn destroy_run(State(state): State<AppState>, Path(id): Path<String>) -> R
             secrets,
             artifacts,
         );
-        let _ = sw_mod_provision::ProvisionerRegistry::new().get(&provider).destroy(&ctx).await;
+        let _ = sw_mod_provision::ProvisionerRegistry::new()
+            .get(&provider)
+            .destroy(&ctx)
+            .await;
     });
     StatusCode::ACCEPTED.into_response()
 }
@@ -336,7 +352,15 @@ async fn get_access(State(state): State<AppState>, Path(id): Path<String>) -> Re
     // Software Hub web console + admin credentials (only present once installed).
     if let Some(host) = oc_get(
         &ctx,
-        &["get", "zenservice", "lite-cr", "-n", &inst_ns, "-o", "jsonpath={.status.url}"],
+        &[
+            "get",
+            "zenservice",
+            "lite-cr",
+            "-n",
+            &inst_ns,
+            "-o",
+            "jsonpath={.status.url}",
+        ],
     )
     .await
     {
@@ -347,13 +371,27 @@ async fn get_access(State(state): State<AppState>, Path(id): Path<String>) -> Re
         });
         info.hub_admin_user = oc_get(
             &ctx,
-            &["extract", "secret/platform-auth-idp-credentials", "-n", &inst_ns, "--keys=admin_username", "--to=-"],
+            &[
+                "extract",
+                "secret/platform-auth-idp-credentials",
+                "-n",
+                &inst_ns,
+                "--keys=admin_username",
+                "--to=-",
+            ],
         )
         .await
         .or_else(|| Some("cpadmin".to_string()));
         info.hub_admin_password = oc_get(
             &ctx,
-            &["extract", "secret/platform-auth-idp-credentials", "-n", &inst_ns, "--keys=admin_password", "--to=-"],
+            &[
+                "extract",
+                "secret/platform-auth-idp-credentials",
+                "-n",
+                &inst_ns,
+                "--keys=admin_password",
+                "--to=-",
+            ],
         )
         .await;
     }

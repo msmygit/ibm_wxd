@@ -19,9 +19,8 @@ fn main() -> ExitCode {
 
     let env = |k: &str| std::env::var(k).ok();
     let read_file = |p: &str| std::fs::read_to_string(p);
-    let mut write_file = |path: &str, contents: &str| -> std::io::Result<()> {
-        std::fs::write(path, contents)
-    };
+    let mut write_file =
+        |path: &str, contents: &str| -> std::io::Result<()> { std::fs::write(path, contents) };
 
     let result = {
         let mut io = Io {

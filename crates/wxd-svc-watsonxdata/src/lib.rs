@@ -157,9 +157,7 @@ impl ServiceInstaller for WatsonxDataInstaller {
                 ),
                 next_steps: vec![
                     "Reconciliation can take 30-60 minutes; wait and retry".into(),
-                    format!(
-                        "Watch progress: oc get {OPERAND_RESOURCE} -n {namespace} -o yaml"
-                    ),
+                    format!("Watch progress: oc get {OPERAND_RESOURCE} -n {namespace} -o yaml"),
                 ],
             },
             Err(e) => StepOutcome::Failed {
@@ -249,7 +247,10 @@ mod tests {
         let calls = runner.calls();
         assert!(calls[0].contains("-n wxd-operands"), "{calls:?}");
         assert!(calls[1].contains("--release=5.4.1"), "{calls:?}");
-        assert!(calls[1].contains("--cpd_instance_ns wxd-operands"), "{calls:?}");
+        assert!(
+            calls[1].contains("--cpd_instance_ns wxd-operands"),
+            "{calls:?}"
+        );
     }
 
     #[tokio::test]

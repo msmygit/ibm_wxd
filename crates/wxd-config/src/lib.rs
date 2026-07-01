@@ -160,7 +160,11 @@ pub fn run(args: &[String], io: &mut Io) -> std::io::Result<RunOutcome> {
     // 4. Generate and write. (config is fully validated here.)
     let contents = generate::render(&config);
     if let Err(e) = (io.write_file)(&opts.output_file, &contents) {
-        writeln!(io.stderr, "error: failed to write '{}': {e}", opts.output_file)?;
+        writeln!(
+            io.stderr,
+            "error: failed to write '{}': {e}",
+            opts.output_file
+        )?;
         return Ok(RunOutcome::Failed);
     }
 
@@ -425,7 +429,10 @@ mod tests {
         e.insert("PROJECT_CPD_INST_OPERANDS".into(), "cpd-instance".into());
         e.insert("PROJECT_LICENSE_SERVICE".into(), "ibm-licensing".into());
         e.insert("PROJECT_SCHEDULING_SERVICE".into(), "cpd-scheduler".into());
-        e.insert("PROJECT_SCHEDULING_BR_SVC".into(), "cpd-scheduler-br".into());
+        e.insert(
+            "PROJECT_SCHEDULING_BR_SVC".into(),
+            "cpd-scheduler-br".into(),
+        );
         e.insert("STG_CLASS_BLOCK".into(), "ocs-block".into());
         e.insert("STG_CLASS_FILE".into(), "ocs-file".into());
         e.insert("VERSION".into(), "5.4.0".into());
@@ -469,11 +476,18 @@ mod tests {
             if v.optional {
                 continue;
             }
-            assert!(file.contains(&format!("export {}=", v.name)), "missing {}", v.name);
+            assert!(
+                file.contains(&format!("export {}=", v.name)),
+                "missing {}",
+                v.name
+            );
         }
         assert!(file.contains("export OCP_USERNAME="));
         assert!(file.contains("export OCP_PASSWORD="));
-        assert!(!file.contains("export OCP_TOKEN="), "token method not chosen");
+        assert!(
+            !file.contains("export OCP_TOKEN="),
+            "token method not chosen"
+        );
     }
 
     #[test]
@@ -502,7 +516,10 @@ mod tests {
         let err = h.stderr_str();
         assert!(err.contains("IBM_ENTITLEMENT_KEY"), "stderr: {err}");
         assert!(err.contains("required"), "stderr: {err}");
-        assert!(h.written_file("cpd_vars.sh").is_none(), "no file on failure");
+        assert!(
+            h.written_file("cpd_vars.sh").is_none(),
+            "no file on failure"
+        );
     }
 
     #[test]
@@ -516,22 +533,49 @@ mod tests {
         let file = h.written_file("cpd_vars.sh").unwrap();
         // Spot-check representative non-secret vars across validation kinds:
         // URL, enum, namespace, and a plain value.
-        assert!(file.contains("export OCP_URL='https://api.c.example.com:6443'"), "{file}");
-        assert!(file.contains("export OPENSHIFT_TYPE='self-managed'"), "{file}");
+        assert!(
+            file.contains("export OCP_URL='https://api.c.example.com:6443'"),
+            "{file}"
+        );
+        assert!(
+            file.contains("export OPENSHIFT_TYPE='self-managed'"),
+            "{file}"
+        );
         assert!(file.contains("export IMAGE_ARCH='amd64'"), "{file}");
-        assert!(file.contains("export PROJECT_CPD_INST_OPERATORS='cpd-operators'"), "{file}");
-        assert!(file.contains("export PROJECT_CPD_INST_OPERANDS='cpd-instance'"), "{file}");
+        assert!(
+            file.contains("export PROJECT_CPD_INST_OPERATORS='cpd-operators'"),
+            "{file}"
+        );
+        assert!(
+            file.contains("export PROJECT_CPD_INST_OPERANDS='cpd-instance'"),
+            "{file}"
+        );
         assert!(file.contains("export VERSION='5.4.0'"), "{file}");
         assert!(file.contains("export COMPONENTS='watsonx_data'"), "{file}");
         // New 5.4.0 required vars.
-        assert!(file.contains("export IMAGE_PULL_SECRET='ibm-entitlement-key'"), "{file}");
-        assert!(file.contains("export PROJECT_LICENSE_SERVICE='ibm-licensing'"), "{file}");
-        assert!(file.contains("export PROJECT_SCHEDULING_SERVICE='cpd-scheduler'"), "{file}");
-        assert!(file.contains("export PROJECT_SCHEDULING_BR_SVC='cpd-scheduler-br'"), "{file}");
+        assert!(
+            file.contains("export IMAGE_PULL_SECRET='ibm-entitlement-key'"),
+            "{file}"
+        );
+        assert!(
+            file.contains("export PROJECT_LICENSE_SERVICE='ibm-licensing'"),
+            "{file}"
+        );
+        assert!(
+            file.contains("export PROJECT_SCHEDULING_SERVICE='cpd-scheduler'"),
+            "{file}"
+        );
+        assert!(
+            file.contains("export PROJECT_SCHEDULING_BR_SVC='cpd-scheduler-br'"),
+            "{file}"
+        );
         // PATCH_ID defaults to latest.
         assert!(file.contains("export PATCH_ID='latest'"), "{file}");
         // Derived vars present and referencing other vars.
-        assert!(file.contains("export SERVER_ARGUMENTS=\"--server=${OCP_URL}\""), "{file}");
+        assert!(
+            file.contains("export SERVER_ARGUMENTS=\"--server=${OCP_URL}\""),
+            "{file}"
+        );
         assert!(
             file.contains("export OLM_UTILS_IMAGE=icr.io/cpopen/cpd/olm-utils-v4:${VERSION}"),
             "{file}"
@@ -542,7 +586,10 @@ mod tests {
         );
         // And the secret's REAL value must still be in the file (it must, to be
         // usable) even though it is masked on the console.
-        assert!(file.contains("export IBM_ENTITLEMENT_KEY='ey-secret-key'"), "{file}");
+        assert!(
+            file.contains("export IBM_ENTITLEMENT_KEY='ey-secret-key'"),
+            "{file}"
+        );
     }
 
     #[test]
@@ -753,7 +800,10 @@ mod tests {
         assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
         let file = h.written_file("cpd_vars.sh").unwrap();
         assert!(file.contains("export OCP_USERNAME='kubeadmin'"));
-        assert!(!file.contains("OCP_TOKEN"), "no token line for userpass method");
+        assert!(
+            !file.contains("OCP_TOKEN"),
+            "no token line for userpass method"
+        );
     }
 
     #[test]
@@ -764,8 +814,14 @@ mod tests {
         assert_eq!(outcome, RunOutcome::Generated("cpd_vars.sh".into()));
         let file = h.written_file("cpd_vars.sh").unwrap();
         assert!(file.contains("export OCP_TOKEN='sha256~abc-token'"));
-        assert!(!file.contains("OCP_USERNAME"), "no username line for token method");
-        assert!(!file.contains("OCP_PASSWORD"), "no password line for token method");
+        assert!(
+            !file.contains("OCP_USERNAME"),
+            "no username line for token method"
+        );
+        assert!(
+            !file.contains("OCP_PASSWORD"),
+            "no password line for token method"
+        );
     }
 
     #[test]

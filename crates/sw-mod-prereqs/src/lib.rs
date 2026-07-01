@@ -31,22 +31,39 @@ fn platform() -> Platform {
     // The cpd-cli asset token is arch-aware (macOS Apple Silicon → `arm64`, not
     // the Intel `darwin` build). Fall back to `linux` for the rare unsupported
     // arch so the fresh-install grep at least targets something.
-    let cpd_token = cpd_asset_token(std::env::consts::OS, std::env::consts::ARCH).unwrap_or("linux");
+    let cpd_token =
+        cpd_asset_token(std::env::consts::OS, std::env::consts::ARCH).unwrap_or("linux");
     match std::env::consts::OS {
         "macos" => Platform {
             dl_os: "darwin",
             helm_arch: if arm { "arm64" } else { "amd64" },
             mirror_arch: if arm { "arm64" } else { "x86_64" },
-            oc_file: if arm { "openshift-client-mac-arm64.tar.gz" } else { "openshift-client-mac.tar.gz" },
-            ois_file: if arm { "openshift-install-mac-arm64.tar.gz" } else { "openshift-install-mac.tar.gz" },
+            oc_file: if arm {
+                "openshift-client-mac-arm64.tar.gz"
+            } else {
+                "openshift-client-mac.tar.gz"
+            },
+            ois_file: if arm {
+                "openshift-install-mac-arm64.tar.gz"
+            } else {
+                "openshift-install-mac.tar.gz"
+            },
             cpd_token,
         },
         _ => Platform {
             dl_os: "linux",
             helm_arch: if arm { "arm64" } else { "amd64" },
             mirror_arch: if arm { "arm64" } else { "x86_64" },
-            oc_file: if arm { "openshift-client-linux-arm64.tar.gz" } else { "openshift-client-linux.tar.gz" },
-            ois_file: if arm { "openshift-install-linux-arm64.tar.gz" } else { "openshift-install-linux.tar.gz" },
+            oc_file: if arm {
+                "openshift-client-linux-arm64.tar.gz"
+            } else {
+                "openshift-client-linux.tar.gz"
+            },
+            ois_file: if arm {
+                "openshift-install-linux-arm64.tar.gz"
+            } else {
+                "openshift-install-linux.tar.gz"
+            },
             cpd_token,
         },
     }
@@ -169,10 +186,17 @@ struct CpdTarget {
 /// version == `version` and whose patch matches `patch_id` (an exact patch when
 /// numeric, else the highest available), and return its tag + the `token`+EE
 /// asset download URL.
-fn select_cpd_target(releases_json: &str, version: &str, patch_id: &str, token: &str) -> Result<CpdTarget, String> {
-    let rels: serde_json::Value =
-        serde_json::from_str(releases_json).map_err(|e| format!("could not parse cpd-cli releases: {e}"))?;
-    let arr = rels.as_array().ok_or("unexpected cpd-cli releases payload")?;
+fn select_cpd_target(
+    releases_json: &str,
+    version: &str,
+    patch_id: &str,
+    token: &str,
+) -> Result<CpdTarget, String> {
+    let rels: serde_json::Value = serde_json::from_str(releases_json)
+        .map_err(|e| format!("could not parse cpd-cli releases: {e}"))?;
+    let arr = rels
+        .as_array()
+        .ok_or("unexpected cpd-cli releases payload")?;
 
     let want_patch: Option<u32> = match patch_id.trim() {
         "" | "latest" | "0" => None,
@@ -183,12 +207,15 @@ fn select_cpd_target(releases_json: &str, version: &str, patch_id: &str, token: 
         .iter()
         .filter_map(|r| {
             let name = r.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            parse_release_cpd(name).and_then(|(cpd_ver, patch)| (cpd_ver == version).then_some((patch, r)))
+            parse_release_cpd(name)
+                .and_then(|(cpd_ver, patch)| (cpd_ver == version).then_some((patch, r)))
         })
         .collect();
 
     if candidates.is_empty() {
-        return Err(format!("no cpd-cli release found for Software Hub {version}"));
+        return Err(format!(
+            "no cpd-cli release found for Software Hub {version}"
+        ));
     }
 
     let chosen = match want_patch {
@@ -204,7 +231,11 @@ fn select_cpd_target(releases_json: &str, version: &str, patch_id: &str, token: 
             .expect("candidates is non-empty"),
     };
 
-    let tag = chosen.get("tag_name").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let tag = chosen
+        .get("tag_name")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
     let needle = format!("-{token}-EE-");
     let url = chosen
         .get("assets")
@@ -213,7 +244,11 @@ fn select_cpd_target(releases_json: &str, version: &str, patch_id: &str, token: 
             assets.iter().find_map(|a| {
                 let n = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 (n.contains(&needle) && n.ends_with(".tgz"))
-                    .then(|| a.get("browser_download_url").and_then(|u| u.as_str()).map(String::from))
+                    .then(|| {
+                        a.get("browser_download_url")
+                            .and_then(|u| u.as_str())
+                            .map(String::from)
+                    })
                     .flatten()
             })
         })
@@ -313,8 +348,16 @@ impl Step for CpdCliCompatStep {
             Ok(o) if o.success() => {}
             Ok(o) => {
                 return StepOutcome::Failed {
-                    error: format!("installing cpd-cli {} failed (exit {}): {}", target.tag, o.status, o.stderr.trim()),
-                    next_steps: vec![format!("Download {} into ~/.wxd/bin manually, then retry.", target.url)],
+                    error: format!(
+                        "installing cpd-cli {} failed (exit {}): {}",
+                        target.tag,
+                        o.status,
+                        o.stderr.trim()
+                    ),
+                    next_steps: vec![format!(
+                        "Download {} into ~/.wxd/bin manually, then retry.",
+                        target.url
+                    )],
                 }
             }
             Err(e) => {
@@ -479,7 +522,11 @@ pub async fn install_one(runner: &dyn CommandRunner, id: &str) -> Result<(), Str
         return Err(format!("unknown tool: {id}"));
     };
     let Some(script) = spec.install.clone() else {
-        return Err(format!("{} cannot be auto-installed. {}", spec.id, spec.manual.join(" ")));
+        return Err(format!(
+            "{} cannot be auto-installed. {}",
+            spec.id,
+            spec.manual.join(" ")
+        ));
     };
     match runner.run("sh", &["-c".to_string(), script]).await {
         Ok(o) if o.success() => {
@@ -489,7 +536,12 @@ pub async fn install_one(runner: &dyn CommandRunner, id: &str) -> Result<(), Str
                 Err(format!("{} installed but did not verify", spec.id))
             }
         }
-        Ok(o) => Err(format!("installing {} failed (exit {}): {}", spec.id, o.status, o.stderr.trim())),
+        Ok(o) => Err(format!(
+            "installing {} failed (exit {}): {}",
+            spec.id,
+            o.status,
+            o.stderr.trim()
+        )),
         Err(e) => Err(format!("could not run installer for {}: {e}", spec.id)),
     }
 }
@@ -525,7 +577,10 @@ impl Step for ToolStep {
         }
         if self.spec.install.is_none() {
             return StepOutcome::Failed {
-                error: format!("{} is not installed and cannot be auto-installed", self.spec.id),
+                error: format!(
+                    "{} is not installed and cannot be auto-installed",
+                    self.spec.id
+                ),
                 next_steps: self.spec.manual.clone(),
             };
         }
@@ -600,10 +655,22 @@ mod tests {
 
     #[test]
     fn module_lists_all_tools_then_cpd_compat() {
-        let ids: Vec<_> = PrereqsModule.steps().iter().map(|s| s.id().to_string()).collect();
+        let ids: Vec<_> = PrereqsModule
+            .steps()
+            .iter()
+            .map(|s| s.id().to_string())
+            .collect();
         assert_eq!(
             ids,
-            vec!["oc", "helm", "openshift-install", "cpd-cli", "aws", "container-runtime", "cpd-cli-compat"]
+            vec![
+                "oc",
+                "helm",
+                "openshift-install",
+                "cpd-cli",
+                "aws",
+                "container-runtime",
+                "cpd-cli-compat"
+            ]
         );
     }
 
@@ -638,29 +705,64 @@ mod tests {
 
     #[test]
     fn parse_release_name_extracts_version_and_patch() {
-        assert_eq!(parse_release_cpd("v14.4.0 … CPD 5.4.0"), Some(("5.4.0".into(), None)));
-        assert_eq!(parse_release_cpd("v14.3.1.7 … CPD 5.3.1 - Patch 7"), Some(("5.3.1".into(), Some(7))));
+        assert_eq!(
+            parse_release_cpd("v14.4.0 … CPD 5.4.0"),
+            Some(("5.4.0".into(), None))
+        );
+        assert_eq!(
+            parse_release_cpd("v14.3.1.7 … CPD 5.3.1 - Patch 7"),
+            Some(("5.3.1".into(), Some(7)))
+        );
         assert_eq!(parse_release_cpd("no cpd token here"), None);
     }
 
     #[test]
     fn parse_version_fields_from_cpd_output() {
         let out = "cpd-cli\n\tVersion: 14.4.0\n\tBuild Date: x\n\tSWH Release Version: 5.4.0\n";
-        assert_eq!(parse_version_field(out, "Version:").as_deref(), Some("14.4.0"));
-        assert_eq!(parse_version_field(out, "SWH Release Version:").as_deref(), Some("5.4.0"));
+        assert_eq!(
+            parse_version_field(out, "Version:").as_deref(),
+            Some("14.4.0")
+        );
+        assert_eq!(
+            parse_version_field(out, "SWH Release Version:").as_deref(),
+            Some("5.4.0")
+        );
     }
 
     #[test]
     fn select_target_by_version_arch_and_patch() {
         // 5.4.0 for each arch resolves to the right asset URL.
-        assert_eq!(select_cpd_target(RELEASES, "5.4.0", "latest", "darwin").unwrap().url, "https://ex/darwin-1440");
-        assert_eq!(select_cpd_target(RELEASES, "5.4.0", "latest", "arm64").unwrap().url, "https://ex/arm64-1440");
+        assert_eq!(
+            select_cpd_target(RELEASES, "5.4.0", "latest", "darwin")
+                .unwrap()
+                .url,
+            "https://ex/darwin-1440"
+        );
+        assert_eq!(
+            select_cpd_target(RELEASES, "5.4.0", "latest", "arm64")
+                .unwrap()
+                .url,
+            "https://ex/arm64-1440"
+        );
         let t = select_cpd_target(RELEASES, "5.4.0", "latest", "linux").unwrap();
-        assert_eq!((t.tag.as_str(), t.url.as_str()), ("v14.4.0", "https://ex/linux-1440"));
+        assert_eq!(
+            (t.tag.as_str(), t.url.as_str()),
+            ("v14.4.0", "https://ex/linux-1440")
+        );
 
         // 5.3.1 "latest" → highest patch (7); explicit patch 7 → same.
-        assert_eq!(select_cpd_target(RELEASES, "5.3.1", "latest", "darwin").unwrap().tag, "v14.3.1.7");
-        assert_eq!(select_cpd_target(RELEASES, "5.3.1", "7", "darwin").unwrap().tag, "v14.3.1.7");
+        assert_eq!(
+            select_cpd_target(RELEASES, "5.3.1", "latest", "darwin")
+                .unwrap()
+                .tag,
+            "v14.3.1.7"
+        );
+        assert_eq!(
+            select_cpd_target(RELEASES, "5.3.1", "7", "darwin")
+                .unwrap()
+                .tag,
+            "v14.3.1.7"
+        );
 
         // Unknown patch / version → error (not a wrong pick).
         assert!(select_cpd_target(RELEASES, "5.3.1", "3", "darwin").is_err());
@@ -668,7 +770,10 @@ mod tests {
     }
 
     fn ctx_in(runner: Arc<MockCommandRunner>, inputs: &[(&str, &str)]) -> StepContext {
-        let map: BTreeMap<String, String> = inputs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let map: BTreeMap<String, String> = inputs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         StepContext::with_artifacts(
             "r".into(),
             "mod-prereqs/cpd-cli-compat".into(),
@@ -686,24 +791,39 @@ mod tests {
             .expect("test host has a cpd-cli build");
         let runner = Arc::new(MockCommandRunner::new(vec![
             // installed cpd-cli targets 5.3.1 (mismatch with chosen 5.4.0)
-            MockResponse::ok("cpd-cli version", "cpd-cli\n\tVersion: 14.3.1\n\tSWH Release Version: 5.3.1\n"),
+            MockResponse::ok(
+                "cpd-cli version",
+                "cpd-cli\n\tVersion: 14.3.1\n\tSWH Release Version: 5.3.1\n",
+            ),
             MockResponse::ok("api.github.com", RELEASES),
             MockResponse::ok("wxd-cpdx", ""), // the download/install sh script
             // after install, cpd-cli targets 5.4.0
-            MockResponse::ok("cpd-cli version", "cpd-cli\n\tVersion: 14.4.0\n\tSWH Release Version: 5.4.0\n"),
+            MockResponse::ok(
+                "cpd-cli version",
+                "cpd-cli\n\tVersion: 14.4.0\n\tSWH Release Version: 5.4.0\n",
+            ),
         ]));
-        let ctx = ctx_in(runner.clone(), &[("VERSION", "5.4.0"), ("PATCH_ID", "latest")]);
+        let ctx = ctx_in(
+            runner.clone(),
+            &[("VERSION", "5.4.0"), ("PATCH_ID", "latest")],
+        );
         assert_eq!(CpdCliCompatStep.run(&ctx).await, StepOutcome::Completed);
         // The install pulled THIS host's asset URL.
-        let expected_url = select_cpd_target(RELEASES, "5.4.0", "latest", host_token).unwrap().url;
-        assert!(runner.calls().iter().any(|c| c.contains(&expected_url)), "should download {expected_url}");
+        let expected_url = select_cpd_target(RELEASES, "5.4.0", "latest", host_token)
+            .unwrap()
+            .url;
+        assert!(
+            runner.calls().iter().any(|c| c.contains(&expected_url)),
+            "should download {expected_url}"
+        );
     }
 
     #[tokio::test]
     async fn compat_is_noop_when_already_matching() {
-        let runner = Arc::new(MockCommandRunner::new(vec![
-            MockResponse::ok("cpd-cli version", "cpd-cli\n\tVersion: 14.4.0\n\tSWH Release Version: 5.4.0\n"),
-        ]));
+        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::ok(
+            "cpd-cli version",
+            "cpd-cli\n\tVersion: 14.4.0\n\tSWH Release Version: 5.4.0\n",
+        )]));
         let ctx = ctx_in(runner.clone(), &[("VERSION", "5.4.0")]);
         assert_eq!(CpdCliCompatStep.run(&ctx).await, StepOutcome::Completed);
         // No network / install when already correct.
@@ -761,9 +881,12 @@ mod tests {
                 manual: vec!["install aws".into()],
             },
         };
-        let runner = MockCommandRunner::new(vec![MockResponse::fail("aws --version", 127, "missing")]);
+        let runner =
+            MockCommandRunner::new(vec![MockResponse::fail("aws --version", 127, "missing")]);
         match aws.run(&ctx(runner)).await {
-            StepOutcome::Failed { next_steps, .. } => assert_eq!(next_steps, vec!["install aws".to_string()]),
+            StepOutcome::Failed { next_steps, .. } => {
+                assert_eq!(next_steps, vec!["install aws".to_string()])
+            }
             o => panic!("expected Failed, got {o:?}"),
         }
     }
@@ -774,7 +897,17 @@ mod tests {
         let runner = MockCommandRunner::new(vec![]);
         let statuses = check_all(&runner).await;
         let ids: Vec<_> = statuses.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, vec!["oc", "helm", "openshift-install", "cpd-cli", "aws", "container-runtime"]);
+        assert_eq!(
+            ids,
+            vec![
+                "oc",
+                "helm",
+                "openshift-install",
+                "cpd-cli",
+                "aws",
+                "container-runtime"
+            ]
+        );
         assert!(statuses.iter().all(|s| s.present));
         // aws is the only check-only (non-installable) tool.
         assert!(!statuses.iter().find(|s| s.id == "aws").unwrap().installable);

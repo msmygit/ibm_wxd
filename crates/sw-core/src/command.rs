@@ -200,20 +200,30 @@ mod tests {
     use super::*;
 
     fn out(status: i32, stdout: &str, stderr: &str) -> CommandOutput {
-        CommandOutput { status, stdout: stdout.into(), stderr: stderr.into() }
+        CommandOutput {
+            status,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        }
     }
 
     #[test]
     fn diagnostic_prefers_stderr_when_present() {
         // Plain (non-PTY) runs put the error on stderr.
-        assert_eq!(out(1, "some stdout noise", "  real error\n").diagnostic(), "real error");
+        assert_eq!(
+            out(1, "some stdout noise", "  real error\n").diagnostic(),
+            "real error"
+        );
     }
 
     #[test]
     fn diagnostic_falls_back_to_stdout_tail_for_pty_runs() {
         // PTY runs (script) merge stderr into stdout, leaving stderr empty; the
         // real error is the tail of stdout — that's what must surface.
-        let long = (1..=30).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let long = (1..=30)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let d = out(1, &long, "").diagnostic();
         assert!(d.starts_with("line 11"), "kept last 20 lines: {d}");
         assert!(d.ends_with("line 30"));
@@ -232,10 +242,7 @@ mod tests {
             MockResponse::fail("create cluster", 1, "boom"),
         ]);
 
-        let v = runner
-            .run("oc", &["version".into()])
-            .await
-            .unwrap();
+        let v = runner.run("oc", &["version".into()]).await.unwrap();
         assert!(v.success());
         assert_eq!(v.stdout, "v1.2.3");
 

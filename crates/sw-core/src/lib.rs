@@ -17,7 +17,9 @@ pub mod orchestrator;
 pub mod registry;
 pub mod store;
 
-pub use command::{CommandOutput, CommandRunner, MockCommandRunner, MockResponse, RealCommandRunner};
+pub use command::{
+    CommandOutput, CommandRunner, MockCommandRunner, MockResponse, RealCommandRunner,
+};
 pub use event::{Event, EventBus};
 pub use model::{
     InputField, RunId, RunState, RunStatus, StepId, StepOutcome, StepState, StepStatus,
