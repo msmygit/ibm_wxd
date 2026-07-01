@@ -22,7 +22,7 @@ pub use event::{Event, EventBus};
 pub use model::{
     InputField, RunId, RunState, RunStatus, StepId, StepOutcome, StepState, StepStatus,
 };
-pub use module::{Module, Step, StepContext};
+pub use module::{detect_docker_host, Module, Step, StepContext};
 pub use orchestrator::Orchestrator;
 pub use registry::{ModuleRegistry, ModuleView, StepView};
 pub use store::RunStore;
