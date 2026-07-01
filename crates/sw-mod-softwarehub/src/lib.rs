@@ -39,21 +39,39 @@ fn scheduler_ns(ctx: &StepContext) -> String {
 fn scheduler_br_ns(ctx: &StepContext) -> String {
     input_or(ctx, "PROJECT_SCHEDULING_BR_SVC", "ibm-cpd-scheduler-br-svc")
 }
+fn license_ns(ctx: &StepContext) -> String {
+    input_or(ctx, "PROJECT_LICENSE_SERVICE", "ibm-licensing")
+}
 fn patch_id(ctx: &StepContext) -> String {
     input_or(ctx, "PATCH_ID", "latest")
 }
-
-/// The platform component set installed by `install-components`. Defaults to the
-/// documented required+recommended base (`ibm-licensing,scheduler,cpd_platform,
-/// br_orchestration`); override via the `platform_components` input (e.g. drop
-/// `scheduler`, which is optional).
-fn platform_components(ctx: &StepContext) -> String {
-    input_or(ctx, "platform_components", "ibm-licensing,scheduler,cpd_platform,br_orchestration")
+/// icr.io by default (the IBM Entitled Registry); a private registry otherwise.
+fn image_pull_prefix(ctx: &StepContext) -> String {
+    input_or(ctx, "IMAGE_PULL_PREFIX", "icr.io")
+}
+fn image_pull_secret(ctx: &StepContext) -> String {
+    input_or(ctx, "IMAGE_PULL_SECRET", "ibm-entitlement-key")
+}
+fn oadp_ns(ctx: &StepContext) -> String {
+    input_or(ctx, "OADP_PROJECT", "openshift-adp")
 }
 
-/// Whether `component` is in the platform component set.
-fn has_component(ctx: &StepContext, component: &str) -> bool {
-    platform_components(ctx).split(',').any(|c| c.trim() == component)
+/// The platform component installed by `install-components` for the instance —
+/// the control plane. Shared components (License Service, scheduler, backup) are
+/// installed by their own commands, NOT install-components. Override via the
+/// `platform_components` input to add more instance components.
+fn platform_components(ctx: &StepContext) -> String {
+    input_or(ctx, "platform_components", "cpd_platform")
+}
+
+/// Whether an optional shared component is opted in (default off). The scheduling
+/// service and Backup/Restore Orchestration service are optional and installed
+/// via `apply-scheduler`/`apply-br` (the latter also needs OADP).
+fn install_scheduler(ctx: &StepContext) -> bool {
+    input_or(ctx, "install_scheduler", "false") == "true"
+}
+fn install_br(ctx: &StepContext) -> bool {
+    input_or(ctx, "install_br", "false") == "true"
 }
 
 /// The (block, file) storage classes for `install-components`. Software Hub +
@@ -463,10 +481,10 @@ impl Step for CreateNamespaces {
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let mut namespaces = vec![operators_ns(ctx), operands_ns(ctx)];
-        if has_component(ctx, "scheduler") {
+        if install_scheduler(ctx) {
             namespaces.push(scheduler_ns(ctx));
         }
-        if has_component(ctx, "br_orchestration") {
+        if install_br(ctx) {
             namespaces.push(scheduler_br_ns(ctx));
         }
         for ns in namespaces {
@@ -535,7 +553,7 @@ impl Step for SchedulerClusterResources {
         "Cluster resources: scheduling service"
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        if !has_component(ctx, "scheduler") {
+        if !install_scheduler(ctx) {
             ctx.log("scheduler not selected; skipping its cluster-scoped resources");
             ctx.progress(100);
             return StepOutcome::Completed;
@@ -566,7 +584,7 @@ impl Step for BrClusterResources {
         "Cluster resources: backup/restore orchestration"
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        if !has_component(ctx, "br_orchestration") {
+        if !install_br(ctx) {
             ctx.log("br_orchestration not selected; skipping its cluster-scoped resources");
             ctx.progress(100);
             return StepOutcome::Completed;
@@ -600,12 +618,14 @@ impl Step for ApplyClusterComponents {
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let version = version(ctx);
-        ctx.log(format!("applying shared cluster components for release {version} (downloading CASE packages)"));
+        ctx.log(format!("installing the License Service (apply-cluster-components) for release {version}"));
         let args = vec![
             "manage".into(),
             "apply-cluster-components".into(),
             format!("--release={version}"),
+            format!("--patch_id={}", patch_id(ctx)),
             "--license_acceptance=true".into(),
+            format!("--licensing_ns={}", license_ns(ctx)),
             "--case_download=true".into(),
         ];
         match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
@@ -617,6 +637,161 @@ impl Step for ApplyClusterComponents {
                 "Confirm cert-manager is installed and the entitlement key is valid, then retry."),
             Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
         }
+    }
+}
+
+/// Create the image pull secret (entitled registry creds) in `namespace`. Needed
+/// by Helm-based shared components (scheduler, backup). Idempotent via apply.
+async fn create_image_pull_secret(ctx: &StepContext, namespace: &str) -> StepOutcome {
+    let key = match ctx.secret("IBM_ENTITLEMENT_KEY") {
+        Some(k) if !k.is_empty() => k.to_string(),
+        _ => return fail("IBM entitlement key not available for the image pull secret", "Provide the IBM entitlement key, then retry."),
+    };
+    let name = image_pull_secret(ctx);
+    ctx.log(format!("creating image pull secret {name} in {namespace}"));
+    // Build the dockerconfig for cp.icr.io + icr.io and apply idempotently. The
+    // key is passed via env ($KEY) so it is never echoed into the live log.
+    let script = format!(
+        "set -e; CRED=$(printf '%s' \"cp:$KEY\" | base64 | tr -d '\\n'); \
+         DC=$(mktemp); printf '{{\"auths\":{{\"cp.icr.io\":{{\"auth\":\"%s\"}},\"icr.io\":{{\"auth\":\"%s\"}}}}}}' \"$CRED\" \"$CRED\" > \"$DC\"; \
+         oc create secret docker-registry {name} --from-file=.dockerconfigjson=\"$DC\" --namespace={namespace} \
+           --dry-run=client -o yaml | oc apply -f -; rm -f \"$DC\"",
+        name = name,
+        namespace = namespace,
+    );
+    let kc = ctx.kubeconfig_path().to_string_lossy().into_owned();
+    let env = [("KUBECONFIG".to_string(), kc), ("KEY".to_string(), key)];
+    match ctx.run_with_env("sh", &["-c".to_string(), script], &env).await {
+        Ok(o) if o.success() => {
+            ctx.progress(100);
+            StepOutcome::Completed
+        }
+        Ok(o) => fail(&format!("creating image pull secret in {namespace} failed (exit {}): {}", o.status, o.stderr.trim()),
+            "Check cluster permissions and the entitlement key, then retry."),
+        Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active session, then retry."),
+    }
+}
+
+/// Optional: install the scheduling service (`apply-scheduler`). Off by default;
+/// enable with the `install_scheduler` input. Creates its image pull secret then
+/// runs apply-scheduler.
+struct ApplyScheduler;
+
+#[async_trait]
+impl Step for ApplyScheduler {
+    fn id(&self) -> &str {
+        "apply-scheduler"
+    }
+    fn title(&self) -> &str {
+        "Install scheduling service"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        if !install_scheduler(ctx) {
+            ctx.log("scheduling service not selected; skipping");
+            ctx.progress(100);
+            return StepOutcome::Completed;
+        }
+        let sched = scheduler_ns(ctx);
+        match create_image_pull_secret(ctx, &sched).await {
+            StepOutcome::Completed => {}
+            other => return other,
+        }
+        ctx.log(format!("installing the scheduling service ({sched})"));
+        let args = vec![
+            "manage".into(),
+            "apply-scheduler".into(),
+            "--license_acceptance=true".into(),
+            format!("--release={}", version(ctx)),
+            format!("--patch_id={}", patch_id(ctx)),
+            format!("--scheduler_ns={sched}"),
+            format!("--image_pull_prefix={}", image_pull_prefix(ctx)),
+            format!("--image_pull_secret={}", image_pull_secret(ctx)),
+        ];
+        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
+            Ok(o) if o.success() => {
+                ctx.progress(100);
+                StepOutcome::Completed
+            }
+            Ok(o) => fail(&format!("apply-scheduler failed (exit {}): {}", o.status, o.stderr.trim()),
+                "Confirm the scheduler cluster-scoped resources and pull secret exist, then retry."),
+            Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
+        }
+    }
+}
+
+/// Optional: install the Backup/Restore Orchestration service for the scheduler
+/// (`apply-br`, needs OADP). Off by default; enable with the `install_br` input.
+struct ApplyBr;
+
+#[async_trait]
+impl Step for ApplyBr {
+    fn id(&self) -> &str {
+        "apply-br"
+    }
+    fn title(&self) -> &str {
+        "Install backup/restore orchestration"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        if !install_br(ctx) {
+            ctx.log("backup/restore orchestration not selected; skipping");
+            ctx.progress(100);
+            return StepOutcome::Completed;
+        }
+        let br_ns = scheduler_br_ns(ctx);
+        match create_image_pull_secret(ctx, &br_ns).await {
+            StepOutcome::Completed => {}
+            other => return other,
+        }
+        ctx.log(format!("installing backup/restore orchestration ({br_ns}); OADP in {}", oadp_ns(ctx)));
+        let args = vec![
+            "manage".into(),
+            "apply-br".into(),
+            "--license_acceptance=true".into(),
+            format!("--release={}", version(ctx)),
+            format!("--patch_id={}", patch_id(ctx)),
+            "--br_tool=oadp".into(),
+            format!("--oadp_ns={}", oadp_ns(ctx)),
+            format!("--scheduler_ns={}", scheduler_ns(ctx)),
+            format!("--br_operator_ns={br_ns}"),
+            format!("--image_pull_prefix={}", image_pull_prefix(ctx)),
+            format!("--image_pull_secret={}", image_pull_secret(ctx)),
+        ];
+        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
+            Ok(o) if o.success() => {
+                ctx.progress(100);
+                StepOutcome::Completed
+            }
+            Ok(o) => fail(&format!("apply-br failed (exit {}): {}", o.status, o.stderr.trim()),
+                "Ensure the OADP operator is installed in OADP_PROJECT and the br cluster resources/pull secret exist, then retry."),
+            Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
+        }
+    }
+}
+
+/// Generate + apply the cluster-scoped resources (CRDs, ClusterRoles, webhooks)
+/// for the instance's components before `install-components`, per the docs.
+struct InstanceClusterResources;
+
+#[async_trait]
+impl Step for InstanceClusterResources {
+    fn id(&self) -> &str {
+        "instance-cluster-resources"
+    }
+    fn title(&self) -> &str {
+        "Cluster resources: platform + services"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        let components = platform_components(ctx);
+        let args = vec![
+            "manage".into(),
+            "case-download".into(),
+            format!("--components={components}"),
+            format!("--release={}", version(ctx)),
+            format!("--patch_id={}", patch_id(ctx)),
+            format!("--operator_ns={}", operators_ns(ctx)),
+            "--cluster_resources=true".into(),
+        ];
+        generate_and_apply_cluster_resources(ctx, args, "the platform").await
     }
 }
 
@@ -771,9 +946,12 @@ impl Module for SoftwareHubModule {
             Box::new(WaitNodesReady),
             Box::new(InstallCertManager),
             Box::new(CreateNamespaces),
-            Box::new(SchedulerClusterResources),
-            Box::new(BrClusterResources),
             Box::new(ApplyClusterComponents),
+            Box::new(SchedulerClusterResources),
+            Box::new(ApplyScheduler),
+            Box::new(BrClusterResources),
+            Box::new(ApplyBr),
+            Box::new(InstanceClusterResources),
             Box::new(InstallPlatform),
             Box::new(WaitReady),
         ]
@@ -816,9 +994,12 @@ mod tests {
                 "wait-nodes-ready",
                 "install-cert-manager",
                 "create-namespaces",
-                "scheduler-cluster-resources",
-                "br-cluster-resources",
                 "apply-cluster-components",
+                "scheduler-cluster-resources",
+                "apply-scheduler",
+                "br-cluster-resources",
+                "apply-br",
+                "instance-cluster-resources",
                 "install-platform",
                 "wait-ready",
             ]
@@ -887,19 +1068,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scheduler_cluster_resources_skips_when_not_selected() {
-        let ctx = ctx_with(MockCommandRunner::new(vec![]), &[("platform_components", "cpd_platform")], &[]);
+    async fn scheduler_cluster_resources_skips_by_default() {
+        // Scheduler is opt-in (install_scheduler defaults false) → skip.
+        let ctx = ctx_with(MockCommandRunner::new(vec![]), &[], &[]);
         assert_eq!(SchedulerClusterResources.run(&ctx).await, StepOutcome::Completed);
     }
 
     #[tokio::test]
-    async fn scheduler_cluster_resources_generates_and_applies_when_selected() {
-        // Default platform_components includes scheduler → case-download then oc apply.
+    async fn scheduler_cluster_resources_runs_when_opted_in() {
         let runner = MockCommandRunner::new(vec![
             MockResponse::ok("case-download", "ok"),
             MockResponse::ok("apply", "applied"),
         ]);
-        let ctx = ctx_with(runner, &[], &[]);
+        let ctx = ctx_with(runner, &[("install_scheduler", "true")], &[]);
         assert_eq!(SchedulerClusterResources.run(&ctx).await, StepOutcome::Completed);
     }
 
