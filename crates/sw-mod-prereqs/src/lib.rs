@@ -28,6 +28,10 @@ struct Platform {
 
 fn platform() -> Platform {
     let arm = std::env::consts::ARCH == "aarch64";
+    // The cpd-cli asset token is arch-aware (macOS Apple Silicon → `arm64`, not
+    // the Intel `darwin` build). Fall back to `linux` for the rare unsupported
+    // arch so the fresh-install grep at least targets something.
+    let cpd_token = cpd_asset_token(std::env::consts::OS, std::env::consts::ARCH).unwrap_or("linux");
     match std::env::consts::OS {
         "macos" => Platform {
             dl_os: "darwin",
@@ -35,7 +39,7 @@ fn platform() -> Platform {
             mirror_arch: if arm { "arm64" } else { "x86_64" },
             oc_file: if arm { "openshift-client-mac-arm64.tar.gz" } else { "openshift-client-mac.tar.gz" },
             ois_file: if arm { "openshift-install-mac-arm64.tar.gz" } else { "openshift-install-mac.tar.gz" },
-            cpd_token: "darwin",
+            cpd_token,
         },
         _ => Platform {
             dl_os: "linux",
@@ -43,7 +47,7 @@ fn platform() -> Platform {
             mirror_arch: if arm { "arm64" } else { "x86_64" },
             oc_file: if arm { "openshift-client-linux-arm64.tar.gz" } else { "openshift-client-linux.tar.gz" },
             ois_file: if arm { "openshift-install-linux-arm64.tar.gz" } else { "openshift-install-linux.tar.gz" },
-            cpd_token: "linux",
+            cpd_token,
         },
     }
 }
@@ -96,6 +100,256 @@ fn cpd_script(p: &Platform) -> String {
          D=$(find /tmp/wxd-cpdx -maxdepth 1 -type d -name 'cpd-cli-*' | head -1); cp -R \"$D\"/* \"$BIN\"/; chmod +x \"$BIN/cpd-cli\"",
         tok = p.cpd_token
     )
+}
+
+// ---- cpd-cli ↔ Software Hub version compatibility -------------------------
+//
+// The chosen Software Hub release (VERSION input) dictates which cpd-cli is
+// required — cpd-cli's own `manage`/olm-utils contract is version-specific, so an
+// old cpd-cli against a new release fails cryptically later. Rather than trust a
+// hardcoded map, we read the compatibility straight from the IBM/cpd-cli GitHub
+// releases: each release NAME encodes it (e.g. "v14.4.0 … CPD 5.4.0",
+// "v14.3.1.7 … CPD 5.3.1 - Patch 7"). If the installed cpd-cli doesn't target the
+// chosen release, we download the matching one for THIS machine's OS+arch.
+
+const CPD_RELEASES_API: &str = "https://api.github.com/repos/IBM/cpd-cli/releases?per_page=100";
+const CPD_RELEASES_URL: &str = "https://github.com/IBM/cpd-cli/releases";
+
+/// The cpd-cli release-asset token for an OS/arch, or None if IBM publishes no
+/// build for it. IBM's asset naming (per the release assets):
+///   - macOS Intel (x86_64)        → `darwin`
+///   - macOS Apple Silicon (arm64) → `arm64`   ← this is a macOS build, not Linux
+///   - Linux x86_64                → `linux`
+///   - Linux ppc64le / s390x       → `ppc64le` / `s390x` (IBM Power / Z)
+/// There is no Linux-arm64 cpd-cli build.
+fn cpd_asset_token(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some("arm64"),
+        ("macos", _) => Some("darwin"),
+        ("linux", "x86_64") => Some("linux"),
+        ("linux", "powerpc64" | "powerpc64le") => Some("ppc64le"),
+        ("linux", "s390x") => Some("s390x"),
+        _ => None,
+    }
+}
+
+/// The value after a labeled line in `cpd-cli version` output (tab-indented),
+/// e.g. `parse_version_field(out, "SWH Release Version:")`.
+fn parse_version_field(version_output: &str, label: &str) -> Option<String> {
+    version_output.lines().find_map(|l| {
+        let l = l.trim();
+        l.strip_prefix(label).map(|v| v.trim().to_string())
+    })
+}
+
+/// Extract `(cpd_version, patch)` from a cpd-cli release name like
+/// "v14.4.0 Cloud Pak for Data command line interface CPD 5.4.0" or
+/// "… CPD 5.3.1 - Patch 7". Returns None if it doesn't carry a `CPD X.Y…` token.
+fn parse_release_cpd(name: &str) -> Option<(String, Option<u32>)> {
+    let rest = &name[name.find("CPD ")? + 4..];
+    let version = rest.split_whitespace().next()?.trim().to_string();
+    if !version.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let patch = name
+        .find("Patch ")
+        .and_then(|p| name[p + 6..].split_whitespace().next())
+        .and_then(|n| n.trim().parse::<u32>().ok());
+    Some((version, patch))
+}
+
+/// The chosen cpd-cli release: its tag (the cpd-cli version) + the download URL
+/// for this machine's asset.
+struct CpdTarget {
+    tag: String,
+    url: String,
+}
+
+/// From the GitHub `/releases` JSON array, pick the cpd-cli release whose CPD
+/// version == `version` and whose patch matches `patch_id` (an exact patch when
+/// numeric, else the highest available), and return its tag + the `token`+EE
+/// asset download URL.
+fn select_cpd_target(releases_json: &str, version: &str, patch_id: &str, token: &str) -> Result<CpdTarget, String> {
+    let rels: serde_json::Value =
+        serde_json::from_str(releases_json).map_err(|e| format!("could not parse cpd-cli releases: {e}"))?;
+    let arr = rels.as_array().ok_or("unexpected cpd-cli releases payload")?;
+
+    let want_patch: Option<u32> = match patch_id.trim() {
+        "" | "latest" | "0" => None,
+        p => p.parse::<u32>().ok(),
+    };
+
+    let candidates: Vec<(Option<u32>, &serde_json::Value)> = arr
+        .iter()
+        .filter_map(|r| {
+            let name = r.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            parse_release_cpd(name).and_then(|(cpd_ver, patch)| (cpd_ver == version).then_some((patch, r)))
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return Err(format!("no cpd-cli release found for Software Hub {version}"));
+    }
+
+    let chosen = match want_patch {
+        Some(p) => candidates
+            .iter()
+            .find(|(patch, _)| *patch == Some(p))
+            .map(|(_, r)| *r)
+            .ok_or_else(|| format!("no cpd-cli release for Software Hub {version} patch {p}"))?,
+        None => candidates
+            .iter()
+            .max_by_key(|(patch, _)| patch.unwrap_or(0))
+            .map(|(_, r)| *r)
+            .expect("candidates is non-empty"),
+    };
+
+    let tag = chosen.get("tag_name").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let needle = format!("-{token}-EE-");
+    let url = chosen
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .and_then(|assets| {
+            assets.iter().find_map(|a| {
+                let n = a.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                (n.contains(&needle) && n.ends_with(".tgz"))
+                    .then(|| a.get("browser_download_url").and_then(|u| u.as_str()).map(String::from))
+                    .flatten()
+            })
+        })
+        .ok_or_else(|| format!("release {tag} has no cpd-cli '{token}' EE asset"))?;
+
+    Ok(CpdTarget { tag, url })
+}
+
+/// Ensures the installed cpd-cli targets the chosen Software Hub release; if not,
+/// downloads the matching one (for this OS+arch) into `~/.wxd/bin`. Idempotent.
+struct CpdCliCompatStep;
+
+#[async_trait]
+impl Step for CpdCliCompatStep {
+    fn id(&self) -> &str {
+        "cpd-cli-compat"
+    }
+    fn title(&self) -> &str {
+        "Match cpd-cli to the Software Hub release"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        let target_version = ctx.input("VERSION").unwrap_or("5.4.0").to_string();
+        let patch_id = ctx.input("PATCH_ID").unwrap_or("latest").to_string();
+        let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+        let token = match cpd_asset_token(os, arch) {
+            Some(t) => t,
+            None => {
+                return StepOutcome::Failed {
+                    error: format!("IBM does not publish a cpd-cli build for {os}/{arch}"),
+                    next_steps: vec![format!(
+                        "Run the installer on a supported workstation (macOS Intel/Apple Silicon, or Linux x86_64/ppc64le/s390x). Releases: {CPD_RELEASES_URL}"
+                    )],
+                }
+            }
+        };
+
+        // What's installed now? (Empty if cpd-cli is missing/errored.)
+        let installed = match ctx.runner().run("cpd-cli", &["version".into()]).await {
+            Ok(o) if o.success() => o.stdout,
+            _ => String::new(),
+        };
+        let installed_swh = parse_version_field(&installed, "SWH Release Version:");
+        let installed_ver = parse_version_field(&installed, "Version:");
+
+        if installed_swh.as_deref() == Some(target_version.as_str()) {
+            ctx.log(format!(
+                "cpd-cli {} already targets Software Hub {target_version}",
+                installed_ver.as_deref().unwrap_or("(installed)")
+            ));
+            ctx.progress(100);
+            return StepOutcome::Completed;
+        }
+
+        ctx.log(format!(
+            "installed cpd-cli ({}) does not target Software Hub {target_version}; finding the matching release for {os}/{arch}",
+            installed_swh.as_deref().or(installed_ver.as_deref()).unwrap_or("none/unknown"),
+        ));
+
+        // Read the cpd-cli ↔ Software Hub compatibility from the GitHub releases.
+        let json = match ctx.runner().run("curl", &["-fsSL".into(), CPD_RELEASES_API.into()]).await {
+            Ok(o) if o.success() && !o.stdout.trim().is_empty() => o.stdout,
+            _ => {
+                return StepOutcome::Failed {
+                    error: format!("could not reach GitHub to find the cpd-cli matching Software Hub {target_version}"),
+                    next_steps: vec![
+                        "Check network access to api.github.com, then retry.".into(),
+                        format!("Or install it manually: download the `cpd-cli-{token}-EE` asset for Software Hub {target_version} from {CPD_RELEASES_URL} into ~/.wxd/bin, then retry."),
+                    ],
+                }
+            }
+        };
+
+        let target = match select_cpd_target(&json, &target_version, &patch_id, token) {
+            Ok(t) => t,
+            Err(e) => {
+                return StepOutcome::Failed {
+                    error: e,
+                    next_steps: vec![format!("Confirm the Software Hub version/patch is valid — releases: {CPD_RELEASES_URL}")],
+                }
+            }
+        };
+
+        ctx.log(format!(
+            "updating cpd-cli → {} for Software Hub {target_version} ({os}/{arch}, asset `cpd-cli-{token}-EE`)",
+            target.tag
+        ));
+
+        // Download the matching asset + install into ~/.wxd/bin.
+        let script = format!(
+            "set -e; BIN=\"$HOME/.wxd/bin\"; mkdir -p \"$BIN\"; \
+             curl -fsSL \"{url}\" -o /tmp/wxd-cpd.tgz; \
+             rm -rf /tmp/wxd-cpdx; mkdir -p /tmp/wxd-cpdx; tar xzf /tmp/wxd-cpd.tgz -C /tmp/wxd-cpdx; \
+             D=$(find /tmp/wxd-cpdx -maxdepth 1 -type d -name 'cpd-cli-*' | head -1); cp -R \"$D\"/* \"$BIN\"/; chmod +x \"$BIN/cpd-cli\"",
+            url = target.url
+        );
+        match ctx.runner().run("sh", &["-c".into(), script]).await {
+            Ok(o) if o.success() => {}
+            Ok(o) => {
+                return StepOutcome::Failed {
+                    error: format!("installing cpd-cli {} failed (exit {}): {}", target.tag, o.status, o.stderr.trim()),
+                    next_steps: vec![format!("Download {} into ~/.wxd/bin manually, then retry.", target.url)],
+                }
+            }
+            Err(e) => {
+                return StepOutcome::Failed {
+                    error: format!("could not run the cpd-cli installer: {e}"),
+                    next_steps: vec!["Ensure `curl` and `tar` are available, then retry.".into()],
+                }
+            }
+        }
+
+        // Verify the new cpd-cli targets the chosen release.
+        let after = ctx
+            .runner()
+            .run("cpd-cli", &["version".into()])
+            .await
+            .ok()
+            .filter(|o| o.success())
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+        match parse_version_field(&after, "SWH Release Version:") {
+            Some(swh) if swh == target_version => {
+                ctx.log(format!("cpd-cli now targets Software Hub {target_version} ({})", target.tag));
+                ctx.progress(100);
+                StepOutcome::Completed
+            }
+            other => StepOutcome::Failed {
+                error: format!(
+                    "installed cpd-cli {} but it reports Software Hub '{}' (expected {target_version})",
+                    target.tag,
+                    other.unwrap_or_default()
+                ),
+                next_steps: vec![format!("Verify the cpd-cli install, or fetch {} manually from {CPD_RELEASES_URL}.", target.tag)],
+            },
+        }
+    }
 }
 
 /// One installable tool: how to detect it and (optionally) how to install it.
@@ -301,10 +555,14 @@ impl Module for PrereqsModule {
         "Install prerequisites"
     }
     fn steps(&self) -> Vec<Box<dyn Step>> {
-        specs()
+        let mut steps: Vec<Box<dyn Step>> = specs()
             .into_iter()
             .map(|spec| Box::new(ToolStep { spec }) as Box<dyn Step>)
-            .collect()
+            .collect();
+        // After the tool steps (cpd-cli is present by now), ensure it matches the
+        // chosen Software Hub release — auto-updating it for this OS/arch if not.
+        steps.push(Box::new(CpdCliCompatStep));
+        steps
     }
 }
 
@@ -341,9 +599,115 @@ mod tests {
     }
 
     #[test]
-    fn module_lists_all_tools() {
+    fn module_lists_all_tools_then_cpd_compat() {
         let ids: Vec<_> = PrereqsModule.steps().iter().map(|s| s.id().to_string()).collect();
-        assert_eq!(ids, vec!["oc", "helm", "openshift-install", "cpd-cli", "aws", "container-runtime"]);
+        assert_eq!(
+            ids,
+            vec!["oc", "helm", "openshift-install", "cpd-cli", "aws", "container-runtime", "cpd-cli-compat"]
+        );
+    }
+
+    // A releases payload shaped like the real GitHub API.
+    const RELEASES: &str = r#"[
+        {"tag_name":"v14.4.0","name":"v14.4.0 Cloud Pak for Data command line interface CPD 5.4.0","assets":[
+            {"name":"cpd-cli-darwin-EE-14.4.0.tgz","browser_download_url":"https://ex/darwin-1440"},
+            {"name":"cpd-cli-arm64-EE-14.4.0.tgz","browser_download_url":"https://ex/arm64-1440"},
+            {"name":"cpd-cli-linux-EE-14.4.0.tgz","browser_download_url":"https://ex/linux-1440"},
+            {"name":"cpd-cli-ppc64le-EE-14.4.0.tgz","browser_download_url":"https://ex/ppc-1440"},
+            {"name":"cpd-cli-s390x-EE-14.4.0.tgz","browser_download_url":"https://ex/s390-1440"}
+        ]},
+        {"tag_name":"v14.3.1.7","name":"v14.3.1.7 Cloud Pak for Data command line interface CPD 5.3.1 - Patch 7","assets":[
+            {"name":"cpd-cli-darwin-EE-14.3.1.tgz","browser_download_url":"https://ex/darwin-1317"}
+        ]},
+        {"tag_name":"v14.3.1","name":"v14.3.1 Cloud Pak for Data command line interface CPD 5.3.1","assets":[
+            {"name":"cpd-cli-darwin-EE-14.3.1.tgz","browser_download_url":"https://ex/darwin-1310"}
+        ]}
+    ]"#;
+
+    #[test]
+    fn asset_token_maps_os_and_arch() {
+        // macOS: Intel → darwin, Apple Silicon → arm64 (a macOS build, not Linux).
+        assert_eq!(cpd_asset_token("macos", "x86_64"), Some("darwin"));
+        assert_eq!(cpd_asset_token("macos", "aarch64"), Some("arm64"));
+        assert_eq!(cpd_asset_token("linux", "x86_64"), Some("linux"));
+        assert_eq!(cpd_asset_token("linux", "powerpc64le"), Some("ppc64le"));
+        assert_eq!(cpd_asset_token("linux", "s390x"), Some("s390x"));
+        // No cpd-cli build exists for Linux arm64.
+        assert_eq!(cpd_asset_token("linux", "aarch64"), None);
+    }
+
+    #[test]
+    fn parse_release_name_extracts_version_and_patch() {
+        assert_eq!(parse_release_cpd("v14.4.0 … CPD 5.4.0"), Some(("5.4.0".into(), None)));
+        assert_eq!(parse_release_cpd("v14.3.1.7 … CPD 5.3.1 - Patch 7"), Some(("5.3.1".into(), Some(7))));
+        assert_eq!(parse_release_cpd("no cpd token here"), None);
+    }
+
+    #[test]
+    fn parse_version_fields_from_cpd_output() {
+        let out = "cpd-cli\n\tVersion: 14.4.0\n\tBuild Date: x\n\tSWH Release Version: 5.4.0\n";
+        assert_eq!(parse_version_field(out, "Version:").as_deref(), Some("14.4.0"));
+        assert_eq!(parse_version_field(out, "SWH Release Version:").as_deref(), Some("5.4.0"));
+    }
+
+    #[test]
+    fn select_target_by_version_arch_and_patch() {
+        // 5.4.0 for each arch resolves to the right asset URL.
+        assert_eq!(select_cpd_target(RELEASES, "5.4.0", "latest", "darwin").unwrap().url, "https://ex/darwin-1440");
+        assert_eq!(select_cpd_target(RELEASES, "5.4.0", "latest", "arm64").unwrap().url, "https://ex/arm64-1440");
+        let t = select_cpd_target(RELEASES, "5.4.0", "latest", "linux").unwrap();
+        assert_eq!((t.tag.as_str(), t.url.as_str()), ("v14.4.0", "https://ex/linux-1440"));
+
+        // 5.3.1 "latest" → highest patch (7); explicit patch 7 → same.
+        assert_eq!(select_cpd_target(RELEASES, "5.3.1", "latest", "darwin").unwrap().tag, "v14.3.1.7");
+        assert_eq!(select_cpd_target(RELEASES, "5.3.1", "7", "darwin").unwrap().tag, "v14.3.1.7");
+
+        // Unknown patch / version → error (not a wrong pick).
+        assert!(select_cpd_target(RELEASES, "5.3.1", "3", "darwin").is_err());
+        assert!(select_cpd_target(RELEASES, "9.9.9", "latest", "darwin").is_err());
+    }
+
+    fn ctx_in(runner: Arc<MockCommandRunner>, inputs: &[(&str, &str)]) -> StepContext {
+        let map: BTreeMap<String, String> = inputs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        StepContext::with_artifacts(
+            "r".into(),
+            "mod-prereqs/cpd-cli-compat".into(),
+            runner as Arc<dyn CommandRunner>,
+            EventBus::new(),
+            map,
+            BTreeMap::new(),
+            std::env::temp_dir(),
+        )
+    }
+
+    #[tokio::test]
+    async fn compat_auto_updates_when_installed_targets_wrong_release() {
+        let host_token = cpd_asset_token(std::env::consts::OS, std::env::consts::ARCH)
+            .expect("test host has a cpd-cli build");
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            // installed cpd-cli targets 5.3.1 (mismatch with chosen 5.4.0)
+            MockResponse::ok("cpd-cli version", "cpd-cli\n\tVersion: 14.3.1\n\tSWH Release Version: 5.3.1\n"),
+            MockResponse::ok("api.github.com", RELEASES),
+            MockResponse::ok("wxd-cpdx", ""), // the download/install sh script
+            // after install, cpd-cli targets 5.4.0
+            MockResponse::ok("cpd-cli version", "cpd-cli\n\tVersion: 14.4.0\n\tSWH Release Version: 5.4.0\n"),
+        ]));
+        let ctx = ctx_in(runner.clone(), &[("VERSION", "5.4.0"), ("PATCH_ID", "latest")]);
+        assert_eq!(CpdCliCompatStep.run(&ctx).await, StepOutcome::Completed);
+        // The install pulled THIS host's asset URL.
+        let expected_url = select_cpd_target(RELEASES, "5.4.0", "latest", host_token).unwrap().url;
+        assert!(runner.calls().iter().any(|c| c.contains(&expected_url)), "should download {expected_url}");
+    }
+
+    #[tokio::test]
+    async fn compat_is_noop_when_already_matching() {
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            MockResponse::ok("cpd-cli version", "cpd-cli\n\tVersion: 14.4.0\n\tSWH Release Version: 5.4.0\n"),
+        ]));
+        let ctx = ctx_in(runner.clone(), &[("VERSION", "5.4.0")]);
+        assert_eq!(CpdCliCompatStep.run(&ctx).await, StepOutcome::Completed);
+        // No network / install when already correct.
+        assert!(!runner.calls().iter().any(|c| c.contains("api.github.com")));
     }
 
     #[test]
