@@ -240,15 +240,20 @@ impl Step for ApplyComponentsStep {
         // cpd-cli manage env, per the IBM installation-variables script. VERSION
         // pins the olm-utils image; PATCH_ID selects the patch; OPENSHIFT_TYPE/
         // IMAGE_ARCH describe the cluster. Keep in sync with softwarehub::cpd_env.
-        let mut cpd_env = vec![
+        // OLM_UTILS_IMAGE must be set explicitly (VERSION alone doesn't switch the
+        // olm-utils image cpd-cli uses); default to the icr.io/cpopen path.
+        let olm_image = ctx
+            .input("OLM_UTILS_IMAGE")
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("icr.io/cpopen/cpd/olm-utils-v4:{version}"));
+        let cpd_env = vec![
             ("VERSION".to_string(), version.clone()),
             ("PATCH_ID".to_string(), ctx.input("PATCH_ID").unwrap_or("latest").to_string()),
             ("OPENSHIFT_TYPE".to_string(), ctx.input("OPENSHIFT_TYPE").unwrap_or("self-managed").to_string()),
             ("IMAGE_ARCH".to_string(), ctx.input("IMAGE_ARCH").unwrap_or("amd64").to_string()),
+            ("OLM_UTILS_IMAGE".to_string(), olm_image),
         ];
-        if let Some(img) = ctx.input("OLM_UTILS_IMAGE").filter(|v| !v.is_empty()) {
-            cpd_env.push(("OLM_UTILS_IMAGE".to_string(), img.to_string()));
-        }
 
         // install-components installs from locally-downloaded CASE packages —
         // fetch them for the selected components first.

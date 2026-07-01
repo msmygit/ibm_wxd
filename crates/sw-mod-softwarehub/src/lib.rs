@@ -92,16 +92,25 @@ fn storage_classes(ctx: &StepContext) -> (String, String) {
 /// image (e.g. the Premium cartridge image); by default cpd-cli derives it from
 /// `VERSION` (`icr.io/cpopen/cpd/olm-utils-v4:${VERSION}`).
 pub fn cpd_env(ctx: &StepContext) -> Vec<(String, String)> {
-    let mut env = vec![
-        ("VERSION".to_string(), version(ctx)),
+    let v = version(ctx);
+    // OLM_UTILS_IMAGE MUST be set explicitly: cpd-cli does not switch the
+    // olm-utils image from VERSION alone (it reuses/recreates the container with
+    // its baked-in default otherwise), so `apply-*`/`install-components` would run
+    // against the wrong release. Default to the documented icr.io/cpopen path
+    // derived from VERSION; override via the OLM_UTILS_IMAGE input (Premium image
+    // or a private registry).
+    let olm_image = ctx
+        .input("OLM_UTILS_IMAGE")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("icr.io/cpopen/cpd/olm-utils-v4:{v}"));
+    vec![
+        ("VERSION".to_string(), v),
         ("PATCH_ID".to_string(), input_or(ctx, "PATCH_ID", "latest")),
         ("OPENSHIFT_TYPE".to_string(), input_or(ctx, "OPENSHIFT_TYPE", "self-managed")),
         ("IMAGE_ARCH".to_string(), input_or(ctx, "IMAGE_ARCH", "amd64")),
-    ];
-    if let Some(img) = ctx.input("OLM_UTILS_IMAGE").filter(|v| !v.is_empty()) {
-        env.push(("OLM_UTILS_IMAGE".to_string(), img.to_string()));
-    }
-    env
+        ("OLM_UTILS_IMAGE".to_string(), olm_image),
+    ]
 }
 
 // ---- steps ----------------------------------------------------------------
