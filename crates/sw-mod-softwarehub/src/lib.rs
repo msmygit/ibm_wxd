@@ -45,6 +45,18 @@ fn storage_classes(ctx: &StepContext) -> (String, String) {
     )
 }
 
+/// Environment for `cpd-cli manage`. `VERSION` pins the `olm-utils-v4` image the
+/// cpd-cli pulls — and therefore which Software Hub release is installable — so
+/// it must be exported on every `cpd-cli manage` call. `OLM_UTILS_IMAGE`
+/// optionally overrides the image (e.g. the Premium cartridge image).
+pub fn cpd_env(ctx: &StepContext) -> Vec<(String, String)> {
+    let mut env = vec![("VERSION".to_string(), version(ctx))];
+    if let Some(img) = ctx.input("OLM_UTILS_IMAGE").filter(|v| !v.is_empty()) {
+        env.push(("OLM_UTILS_IMAGE".to_string(), img.to_string()));
+    }
+    env
+}
+
 // ---- steps ----------------------------------------------------------------
 
 /// Verify the client tooling and an authenticated session exist, and that the
@@ -98,6 +110,38 @@ impl Step for PreflightHub {
         }
         ctx.progress(100);
         StepOutcome::Completed
+    }
+}
+
+/// Restart the olm-utils container so it runs the image matching the requested
+/// Software Hub `VERSION`. cpd-cli pins the release by the `VERSION` env var and
+/// reuses an already-running container, so without this a stale container (e.g.
+/// a default 5.3.x image) would silently install the wrong release.
+struct RestartContainer;
+
+#[async_trait]
+impl Step for RestartContainer {
+    fn id(&self) -> &str {
+        "restart-container"
+    }
+    fn title(&self) -> &str {
+        "Load olm-utils image for the release"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        let v = version(ctx);
+        ctx.log(format!("loading the olm-utils image for Software Hub {v} (VERSION={v})"));
+        let args = vec!["manage".into(), "restart-container".into()];
+        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
+            Ok(o) if o.success() => {
+                ctx.progress(100);
+                StepOutcome::Completed
+            }
+            Ok(o) => fail(
+                &format!("restart-container failed (exit {}): {}", o.status, o.stderr.trim()),
+                "Ensure a container runtime is running and can pull the olm-utils image, then retry.",
+            ),
+            Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
+        }
     }
 }
 
@@ -164,7 +208,7 @@ impl Step for LoginToOcp {
         args.push("--insecure-skip-tls-verify=true".into());
 
         ctx.log("logging cpd-cli into the cluster");
-        match ctx.run_in_cluster_pty_masking("cpd-cli", &args, &mask).await {
+        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &mask).await {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
@@ -218,7 +262,7 @@ impl Step for AddEntitlement {
             "add-icr-cred-to-global-pull-secret".into(),
             format!("--entitled_registry_key={key}"),
         ];
-        match ctx.run_in_cluster_pty("cpd-cli", &args).await {
+        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
             Ok(o) if o.success() => {
                 ctx.log("entitled registry credential applied");
                 ctx.progress(100);
@@ -377,7 +421,7 @@ impl Step for ApplyClusterComponents {
             "--license_acceptance=true".into(),
             "--case_download=true".into(),
         ];
-        match ctx.run_in_cluster_pty("cpd-cli", &args).await {
+        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
@@ -435,7 +479,7 @@ impl Step for InstallPlatform {
             format!("--block_storage_class={block_sc}"),
             format!("--file_storage_class={file_sc}"),
         ];
-        match ctx.run_in_cluster_pty("cpd-cli", &args).await {
+        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
@@ -502,7 +546,7 @@ pub async fn case_download(ctx: &StepContext, release: &str, components: &str) -
         format!("--release={release}"),
         format!("--components={components}"),
     ];
-    match ctx.run_in_cluster_pty("cpd-cli", &args).await {
+    match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
         Ok(o) if o.success() => None,
         Ok(o) => Some(fail(&format!("case-download failed (exit {}): {}", o.status, o.stderr.trim()),
             "Confirm network access to the IBM CASE repository (or use --from_oci), then retry.")),
@@ -533,6 +577,7 @@ impl Module for SoftwareHubModule {
     fn steps(&self) -> Vec<Box<dyn Step>> {
         vec![
             Box::new(PreflightHub),
+            Box::new(RestartContainer),
             Box::new(LoginToOcp),
             Box::new(AddEntitlement),
             Box::new(InstallCertManager),
@@ -574,6 +619,7 @@ mod tests {
             ids,
             vec![
                 "preflight-hub",
+                "restart-container",
                 "login-to-ocp",
                 "entitle-registry",
                 "install-cert-manager",
