@@ -44,6 +44,10 @@ async function api(path, options = {}) {
 // ---- state ----------------------------------------------------------------
 let currentRunId = null;
 let eventSource = null;
+// The prompt we last auto-scrolled/focused for, so we signal an awaiting-input
+// state exactly once per new prompt instead of on every SSE refresh (which
+// would fight the user's own scrolling). Reset when the input panel hides.
+let scrolledForPrompt = null;
 
 // ---- theme ----------------------------------------------------------------
 function effectiveTheme() {
@@ -352,8 +356,27 @@ function renderRun(run) {
   if (run.status === "awaiting_input" && run.pending_inputs && run.pending_inputs.length) {
     renderInputForm(run);
     inputPanel.hidden = false;
+    inputPanel.classList.add("awaiting");
+    // Shout about it at the top and bring the form into view — but only the
+    // first time this particular prompt appears, so SSE refreshes don't yank
+    // the page while the user is filling in the fields.
+    const prompt = run.pending_prompt || "provide the required input below";
+    banner("attention", `⚠️ Action needed: ${prompt}`);
+    if (scrolledForPrompt !== prompt) {
+      scrolledForPrompt = prompt;
+      inputPanel.scrollIntoView({ behavior: "smooth", block: "center" });
+      const first = $("#input-form input");
+      if (first) first.focus();
+    }
   } else {
     inputPanel.hidden = true;
+    inputPanel.classList.remove("awaiting");
+    // No longer awaiting: clear the attention banner and reset the tracker so
+    // the next awaiting-input state scrolls/focuses afresh.
+    if (scrolledForPrompt !== null) {
+      scrolledForPrompt = null;
+      $("#status-banner").hidden = true;
+    }
   }
 
   if (run.status === "completed") banner("ok", "Install completed.");
@@ -397,7 +420,12 @@ function renderInputForm(run) {
         method: "POST",
         body: JSON.stringify({ values, secrets }),
       });
-      $("#input-panel").hidden = true;
+      const panel = $("#input-panel");
+      panel.hidden = true;
+      panel.classList.remove("awaiting");
+      // Reset the tracker so any subsequent awaiting-input prompt re-signals.
+      scrolledForPrompt = null;
+      $("#status-banner").hidden = true;
     } catch (e) {
       banner("fail", `Could not submit inputs: ${e.message}`);
     }
@@ -506,7 +534,10 @@ function resetRunView() {
   $("#run-meta").textContent = "No run yet.";
   clear($("#steps"));
   $("#log").textContent = "";
-  $("#input-panel").hidden = true;
+  const inputPanel = $("#input-panel");
+  inputPanel.hidden = true;
+  inputPanel.classList.remove("awaiting");
+  scrolledForPrompt = null;
   $("#status-banner").hidden = true;
   for (const id of ["#pause-btn", "#resume-btn", "#retry-btn", "#destroy-btn"]) {
     $(id).disabled = true;
