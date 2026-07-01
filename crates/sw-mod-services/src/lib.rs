@@ -206,13 +206,19 @@ fn services_cpd_env(ctx: &StepContext) -> Vec<(String, String)> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("icr.io/cpopen/cpd/olm-utils-v4:{version}"));
-    vec![
+    let mut env = vec![
         ("VERSION".to_string(), version),
         ("PATCH_ID".to_string(), service_patch_id(ctx)),
         ("OPENSHIFT_TYPE".to_string(), ctx.input("OPENSHIFT_TYPE").unwrap_or("self-managed").to_string()),
         ("IMAGE_ARCH".to_string(), ctx.input("IMAGE_ARCH").unwrap_or("amd64").to_string()),
         ("OLM_UTILS_IMAGE".to_string(), olm_image),
-    ]
+    ];
+    // cpd-cli manage reads DOCKER_HOST from its own Go docker client (not the
+    // docker CLI context); set it so an unattended server can run cpd-cli.
+    if let Some(docker_host) = sw_core::detect_docker_host() {
+        env.push(("DOCKER_HOST".to_string(), docker_host));
+    }
+    env
 }
 
 impl Module for ComponentsModule {

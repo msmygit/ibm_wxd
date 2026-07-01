@@ -284,6 +284,42 @@ pub trait Module: Send + Sync {
     fn steps(&self) -> Vec<Box<dyn Step>>;
 }
 
+/// Detect the container-runtime socket for `cpd-cli manage`, which reads
+/// `DOCKER_HOST` from its own Go client (NOT the docker CLI context/config).
+///
+/// Without this, a normally-launched server can't run any `cpd-cli manage` step
+/// (the socket isn't found). Respects an existing non-empty `DOCKER_HOST` so a
+/// manual override still wins; otherwise probes the well-known socket paths
+/// (Docker Desktop for Mac first, then the system sockets, then Rancher/Podman
+/// Desktop). Returns `None` if nothing is found — cpd-cli then surfaces its own
+/// error rather than us guessing wrong.
+pub fn detect_docker_host() -> Option<String> {
+    let existing = std::env::var("DOCKER_HOST").ok().filter(|s| !s.trim().is_empty());
+    let home = std::env::var("HOME").unwrap_or_default();
+    let candidates = [
+        format!("{home}/.docker/run/docker.sock"), // Docker Desktop for Mac
+        "/var/run/docker.sock".to_string(),        // classic system socket
+        "/run/docker.sock".to_string(),
+        format!("{home}/.rd/docker.sock"), // Rancher Desktop
+    ];
+    docker_host_pick(existing, &candidates, |p| std::path::Path::new(p).exists())
+}
+
+/// Pure selection logic behind [`detect_docker_host`], split out for testing.
+fn docker_host_pick(
+    existing: Option<String>,
+    candidates: &[String],
+    exists: impl Fn(&str) -> bool,
+) -> Option<String> {
+    if let Some(existing) = existing {
+        return Some(existing);
+    }
+    candidates
+        .iter()
+        .find(|p| exists(p))
+        .map(|p| format!("unix://{p}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +464,29 @@ mod tests {
             }
             other => panic!("expected a Log event, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn docker_host_prefers_existing_env() {
+        let got = docker_host_pick(
+            Some("tcp://1.2.3.4:2375".to_string()),
+            &["/var/run/docker.sock".to_string()],
+            |_| true,
+        );
+        assert_eq!(got.as_deref(), Some("tcp://1.2.3.4:2375"));
+    }
+
+    #[test]
+    fn docker_host_picks_first_existing_socket() {
+        let candidates = ["/a/docker.sock".to_string(), "/b/docker.sock".to_string()];
+        let got = docker_host_pick(None, &candidates, |p| p == "/b/docker.sock");
+        assert_eq!(got.as_deref(), Some("unix:///b/docker.sock"));
+    }
+
+    #[test]
+    fn docker_host_none_when_no_socket() {
+        let candidates = ["/a/docker.sock".to_string()];
+        assert_eq!(docker_host_pick(None, &candidates, |_| false), None);
     }
 
     #[tokio::test]

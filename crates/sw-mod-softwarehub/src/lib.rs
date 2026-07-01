@@ -104,13 +104,20 @@ pub fn cpd_env(ctx: &StepContext) -> Vec<(String, String)> {
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| format!("icr.io/cpopen/cpd/olm-utils-v4:{v}"));
-    vec![
+    let mut env = vec![
         ("VERSION".to_string(), v),
         ("PATCH_ID".to_string(), input_or(ctx, "PATCH_ID", "latest")),
         ("OPENSHIFT_TYPE".to_string(), input_or(ctx, "OPENSHIFT_TYPE", "self-managed")),
         ("IMAGE_ARCH".to_string(), input_or(ctx, "IMAGE_ARCH", "amd64")),
         ("OLM_UTILS_IMAGE".to_string(), olm_image),
-    ]
+    ];
+    // cpd-cli manage runs the olm-utils container via its own Go docker client,
+    // which reads DOCKER_HOST (not the docker CLI context). Set it so a normally
+    // launched server can run cpd-cli without a manual export.
+    if let Some(docker_host) = sw_core::detect_docker_host() {
+        env.push(("DOCKER_HOST".to_string(), docker_host));
+    }
+    env
 }
 
 // ---- steps ----------------------------------------------------------------
@@ -878,6 +885,47 @@ impl Step for WaitReady {
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let inst_ns = operands_ns(ctx);
         ctx.log("checking control-plane readiness");
+
+        // Gate on the cpd_platform CR (Ibmcpd) being FULLY reconciled, not just
+        // ZenService. Retrying install-platform re-triggers an Ibmcpd reconcile;
+        // during it `.status.currentVersion` is transiently empty and
+        // `controlPlaneStatus` != Completed. If services start then, cpd-cli's
+        // foundation check reads that empty version and errors "Software Hub must
+        // be installed to release <x>". Requiring currentVersion non-empty +
+        // controlPlaneStatus=Completed closes that race.
+        let ibmcpd = match ctx
+            .run_in_cluster(
+                "oc",
+                &[
+                    "get".into(), "ibmcpd".into(), "ibmcpd-cr".into(),
+                    "-n".into(), inst_ns.clone(),
+                    "-o".into(), "jsonpath={.status.controlPlaneStatus}|{.status.currentVersion}".into(),
+                ],
+            )
+            .await
+        {
+            Ok(o) if o.success() => o.stdout.trim().to_string(),
+            Ok(o) => {
+                return StepOutcome::Failed {
+                    error: format!("cpd_platform (Ibmcpd) not ready yet: {}", o.stderr.trim()),
+                    next_steps: vec!["The platform is still reconciling. Wait a few minutes, then Retry this step.".into()],
+                }
+            }
+            Err(e) => {
+                return StepOutcome::Failed {
+                    error: format!("could not query Ibmcpd readiness: {e}"),
+                    next_steps: vec!["Ensure `oc` has an active session, then retry.".into()],
+                }
+            }
+        };
+        let (cp_status, cp_version) = ibmcpd.split_once('|').unwrap_or((ibmcpd.as_str(), ""));
+        if cp_status != "Completed" || cp_version.is_empty() {
+            return StepOutcome::Failed {
+                error: format!("cpd_platform still reconciling (controlPlaneStatus={cp_status}, currentVersion={cp_version})"),
+                next_steps: vec!["The Software Hub platform is still reconciling. Wait a few minutes, then Retry this step.".into()],
+            };
+        }
+
         match ctx
             .run_in_cluster(
                 "oc",
@@ -890,11 +938,12 @@ impl Step for WaitReady {
             .await
         {
             Ok(o) if o.success() && o.stdout.contains("Completed") => {
+                ctx.log(format!("control plane ready (Ibmcpd {cp_version} Completed, ZenService Completed)"));
                 ctx.progress(100);
                 StepOutcome::Completed
             }
             Ok(o) => StepOutcome::Failed {
-                error: format!("control plane not ready yet (status: {})", o.stdout.trim()),
+                error: format!("control plane not ready yet (ZenService status: {})", o.stdout.trim()),
                 next_steps: vec!["Installation is still reconciling. Wait a few minutes, then Retry this step.".into()],
             },
             Err(e) => StepOutcome::Failed {
@@ -1119,18 +1168,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_ready_completes_when_status_completed() {
-        let runner = MockCommandRunner::new(vec![MockResponse::ok("ZenService", "Completed")]);
+    async fn wait_ready_completes_when_platform_and_zen_completed() {
+        let runner = MockCommandRunner::new(vec![
+            MockResponse::ok("ibmcpd", "Completed|5.10.0"),
+            MockResponse::ok("ZenService", "Completed"),
+        ]);
         let ctx = ctx_with(runner, &[], &[]);
         assert_eq!(WaitReady.run(&ctx).await, StepOutcome::Completed);
     }
 
     #[tokio::test]
-    async fn wait_ready_fails_retryable_when_not_completed() {
-        let runner = MockCommandRunner::new(vec![MockResponse::ok("ZenService", "InProgress")]);
+    async fn wait_ready_fails_retryable_when_zenservice_not_completed() {
+        let runner = MockCommandRunner::new(vec![
+            MockResponse::ok("ibmcpd", "Completed|5.10.0"),
+            MockResponse::ok("ZenService", "InProgress"),
+        ]);
         let ctx = ctx_with(runner, &[], &[]);
         match WaitReady.run(&ctx).await {
             StepOutcome::Failed { next_steps, .. } => assert!(next_steps.iter().any(|s| s.contains("Retry"))),
+            o => panic!("expected Failed, got {o:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_ready_fails_when_platform_still_reconciling() {
+        // Ibmcpd currentVersion transiently empty (mid-reconcile) must NOT pass —
+        // this is the install-platform→services race guard.
+        let runner = MockCommandRunner::new(vec![
+            MockResponse::ok("ibmcpd", "InProgress|"),
+            MockResponse::ok("ZenService", "Completed"),
+        ]);
+        let ctx = ctx_with(runner, &[], &[]);
+        match WaitReady.run(&ctx).await {
+            StepOutcome::Failed { error, .. } => assert!(error.contains("reconciling")),
             o => panic!("expected Failed, got {o:?}"),
         }
     }
