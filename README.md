@@ -20,10 +20,11 @@ panel with the cluster URLs + credentials when it's done.
 
 ```bash
 export PATH="/usr/local/opt/rust/bin:$HOME/.cargo/bin:$PATH"
-cargo run -p sw-api --bin wxd   # binds 127.0.0.1, prints a tokenized URL to open
+cargo run -p sw-api --bin wxd   # binds 127.0.0.1, prints the URL to open
 ```
 
-Open the printed `http://127.0.0.1:<port>/?token=<token>` URL, choose a mode, and
+Open the URL it prints (a bare `http://127.0.0.1:<port>/` by default, or a
+`?token=…` URL if you set `WXD_TOKEN` — see below), choose a mode, and
 click **Start install**. The tool **auto-installs the CLIs it needs**
 (`oc`, `helm`, `openshift-install`, `cpd-cli`) into `~/.wxd/bin` — you don't
 pre-install them. Two run modes:
@@ -39,6 +40,32 @@ GCP), or leave them blank to fall back to `~/.aws/credentials` and
 `~/.ibm/IBM_CLOUD_API_KEY`. Every created cloud resource is tagged with the name
 you provide. Full walkthrough: **[Running the installer guide](docs/running-the-installer.md)**.
 All tests are hermetic (no cloud spend): `cargo test --workspace`.
+
+### Server environment variables
+
+The `wxd` server (`sw-api`) reads three optional environment variables — all have
+sensible defaults, so a bare `cargo run -p sw-api --bin wxd` just works:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WXD_TOKEN` | *(unset)* | **Optional API auth token.** When **unset/empty, auth is disabled** — the server binds `127.0.0.1` only, so only local processes can reach it, and it prints a bare `http://127.0.0.1:<port>/` URL. When **set to any string you choose**, that value becomes the required token: the server prints `http://127.0.0.1:<port>/?token=<value>` and the UI sends it via the `x-wxd-token` header (or `?token=`); requests without it get `401`. There is no "correct" value — it's an arbitrary secret **you** invent. Only worth setting if you expose the port beyond localhost (e.g. a tunnel). |
+| `WXD_PORT` | `4178` | TCP port to bind on `127.0.0.1`. |
+| `WXD_UI_DIR` | `crates/sw-api/ui` | Directory of the static UI to serve (override to point at a custom UI build). |
+
+Examples:
+
+```bash
+# Default — no token, open the bare URL it prints:
+cargo run -p sw-api --bin wxd
+
+# Require a token (any random string works) and/or a different port:
+WXD_TOKEN="$(openssl rand -hex 16)" WXD_PORT=4200 cargo run -p sw-api --bin wxd
+# → open the printed http://127.0.0.1:4200/?token=… URL
+```
+
+Run state (per-run `state.json`, `events.log`, `0600` `secrets.json`, and
+`artifacts/`) always lives under `~/.wxd/runs/<run-id>/`; auto-installed CLIs go
+to `~/.wxd/bin`.
 
 ## Crate map
 
