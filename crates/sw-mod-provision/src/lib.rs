@@ -151,6 +151,74 @@ fn install_complete_marker(ctx: &StepContext) -> std::path::PathBuf {
     cluster_dir(ctx).join(".wxd_install_complete")
 }
 
+/// Map a user-supplied OpenShift version to an OpenShift mirror channel/dir.
+/// `4.21` → `stable-4.21` (latest 4.21.z); `4.21.5` → `4.21.5` (exact); an
+/// explicit channel (`stable-4.21`, `latest-4.20`, `candidate-4.22`) is kept.
+fn ocp_channel(version: &str) -> String {
+    let v = version.trim();
+    if v.is_empty() {
+        return "stable".to_string();
+    }
+    if v.starts_with("stable") || v.starts_with("latest") || v.starts_with("fast") || v.starts_with("candidate") {
+        return v.to_string();
+    }
+    if v.matches('.').count() >= 2 {
+        v.to_string() // exact x.y.z
+    } else {
+        format!("stable-{v}") // x.y → latest patch on that minor
+    }
+}
+
+/// Download the `openshift-install` binary for the requested OpenShift version
+/// into `~/.wxd/bin` so `create cluster` installs that version. Best-effort: on
+/// failure it logs a warning and leaves the existing installer in place. Skips
+/// the download when the installed binary already matches the requested minor.
+async fn ensure_installer_version(ctx: &StepContext, version: &str) {
+    let minor: String = version
+        .trim()
+        .trim_start_matches("stable-")
+        .trim_start_matches("latest-")
+        .trim_start_matches("fast-")
+        .trim_start_matches("candidate-")
+        .split('.')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".");
+    if let Ok(o) = ctx.run("openshift-install", &["version".to_string()]).await {
+        if o.success() && o.stdout.contains(&format!("openshift-install {minor}.")) {
+            ctx.log(format!("openshift-install already matches OpenShift {minor}"));
+            return;
+        }
+    }
+    let channel = ocp_channel(version);
+    let arm = std::env::consts::ARCH == "aarch64";
+    let (arch, file) = match std::env::consts::OS {
+        "macos" => (
+            if arm { "arm64" } else { "x86_64" },
+            if arm { "openshift-install-mac-arm64.tar.gz" } else { "openshift-install-mac.tar.gz" },
+        ),
+        _ => (
+            if arm { "arm64" } else { "x86_64" },
+            if arm { "openshift-install-linux-arm64.tar.gz" } else { "openshift-install-linux.tar.gz" },
+        ),
+    };
+    let script = format!(
+        "set -e; BIN=\"$HOME/.wxd/bin\"; mkdir -p \"$BIN\"; \
+         curl -fsSL \"https://mirror.openshift.com/pub/openshift-v4/{arch}/clients/ocp/{channel}/{file}\" -o /tmp/wxd-ois.tgz; \
+         tar xzf /tmp/wxd-ois.tgz -C \"$BIN\" openshift-install; chmod +x \"$BIN/openshift-install\""
+    );
+    ctx.log(format!("installing openshift-install for OpenShift {version} (channel {channel})"));
+    match ctx.run("sh", &["-c".to_string(), script]).await {
+        Ok(o) if o.success() => ctx.log("openshift-install version ready"),
+        Ok(o) => ctx.log(format!(
+            "warning: could not install openshift-install {version} (exit {}): {} — using the existing installer",
+            o.status,
+            o.stderr.trim()
+        )),
+        Err(e) => ctx.log(format!("warning: could not run installer download: {e} — using the existing installer")),
+    }
+}
+
 /// Backup location for `metadata.json`, kept outside the cluster dir so it
 /// survives openshift-install pruning the cluster dir on destroy.
 fn metadata_backup_path(ctx: &StepContext) -> std::path::PathBuf {
@@ -414,6 +482,13 @@ impl Provisioner for AwsProvisioner {
         // resumable once its local control plane is gone — resume with the
         // idempotent `wait-for` path instead of starting over.
         let started = dir.join(".openshift_install_state.json").exists();
+        // On a fresh attempt, make sure `openshift-install` matches the requested
+        // OpenShift version (it pins the release payload it installs).
+        if !started {
+            if let Some(v) = ctx.input("ocp_version").filter(|v| !v.trim().is_empty()) {
+                ensure_installer_version(ctx, v).await;
+            }
+        }
         let outcome = if started {
             ctx.log("install already in progress — resuming (wait-for bootstrap + install-complete)");
             ctx.progress(20);
@@ -834,6 +909,12 @@ fn spec_fields() -> Vec<InputField> {
             label: "Base domain (Route53 hosted zone)".to_string(),
             secret: false,
             default: None,
+        },
+        InputField {
+            key: "ocp_version".to_string(),
+            label: "OpenShift version".to_string(),
+            secret: false,
+            default: Some("4.21".to_string()),
         },
         InputField {
             key: "create_base_domain_zone".to_string(),
@@ -1637,11 +1718,12 @@ mod tests {
         let outcome = cluster_spec().run(&ctx).await;
         match outcome {
             StepOutcome::NeedsInput { fields, .. } => {
-                assert_eq!(fields.len(), 9, "should request all spec fields");
+                assert_eq!(fields.len(), 10, "should request all spec fields");
                 let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
                 assert!(keys.contains(&"cluster_name"));
                 assert!(keys.contains(&"region"));
                 assert!(keys.contains(&"base_domain"));
+                assert!(keys.contains(&"ocp_version"));
                 assert!(keys.contains(&"worker_count"));
                 assert!(keys.contains(&"resource_tags"));
             }
@@ -1658,6 +1740,15 @@ mod tests {
             temp_dir("spec-full"),
         );
         assert_eq!(cluster_spec().run(&ctx).await, StepOutcome::Completed);
+    }
+
+    #[test]
+    fn ocp_channel_maps_versions_to_mirror_dirs() {
+        assert_eq!(ocp_channel("4.21"), "stable-4.21"); // minor → latest patch
+        assert_eq!(ocp_channel("4.21.5"), "4.21.5"); // exact
+        assert_eq!(ocp_channel("stable-4.20"), "stable-4.20"); // explicit channel kept
+        assert_eq!(ocp_channel("latest-4.22"), "latest-4.22");
+        assert_eq!(ocp_channel(""), "stable"); // fallback
     }
 
     #[tokio::test]
