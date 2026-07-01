@@ -28,6 +28,7 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/:id/resume", post(resume_run))
         .route("/runs/:id/retry", post(retry_run))
         .route("/runs/:id/destroy", post(destroy_run))
+        .route("/runs/:id/access", get(get_access))
         .route("/runs/:id/inputs", post(submit_inputs))
         .route("/runs/:id/events", get(events))
         .route("/catalog/hyperscalers", get(get_hyperscalers))
@@ -248,6 +249,125 @@ async fn destroy_run(State(state): State<AppState>, Path(id): Path<String>) -> R
         let _ = sw_mod_provision::ProvisionerRegistry::new().get(&provider).destroy(&ctx).await;
     });
     StatusCode::ACCEPTED.into_response()
+}
+
+/// Everything a user needs to reach and sign in to the cluster + Software Hub,
+/// gathered best-effort from the run artifacts and a live cluster query. Fields
+/// that can't be resolved (cluster still building, `oc` unreachable, existing-
+/// cluster mode) are omitted. Secret fields travel only over the localhost-bound,
+/// token-protected API and are masked by the UI until revealed.
+#[derive(Default, serde::Serialize)]
+struct AccessInfo {
+    provider: Option<String>,
+    cluster_name: Option<String>,
+    region: Option<String>,
+    kubeconfig_path: Option<String>,
+    openshift_api_url: Option<String>,
+    openshift_console_url: Option<String>,
+    kubeadmin_user: Option<String>,
+    kubeadmin_password: Option<String>,
+    hub_console_url: Option<String>,
+    hub_admin_user: Option<String>,
+    hub_admin_password: Option<String>,
+    notes: Vec<String>,
+}
+
+/// Run `oc <args>` against the run's cluster and return trimmed non-empty stdout,
+/// or `None` on failure/timeout (so the access panel degrades gracefully).
+async fn oc_get(ctx: &sw_core::StepContext, args: &[&str]) -> Option<String> {
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let fut = ctx.run_in_cluster("oc", &args);
+    match tokio::time::timeout(std::time::Duration::from_secs(12), fut).await {
+        Ok(Ok(o)) if o.success() => {
+            let t = o.stdout.trim();
+            (!t.is_empty()).then(|| t.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Access details (URLs + credentials) for a completed run.
+async fn get_access(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let run = match state.orch.store().load(&id) {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::NOT_FOUND, "no such run").into_response(),
+    };
+    let inputs = run.inputs.clone();
+    let secrets = state.orch.store().load_secrets(&id).unwrap_or_default();
+    let artifacts = state.orch.store().artifacts_dir(&id);
+    let inst_ns = inputs
+        .get("PROJECT_CPD_INST_OPERANDS")
+        .cloned()
+        .unwrap_or_else(|| "cpd-instance".to_string());
+    let ctx = sw_core::StepContext::with_artifacts(
+        id.clone(),
+        "access".to_string(),
+        state.orch.command_runner(),
+        state.orch.bus().clone(),
+        inputs.clone(),
+        secrets,
+        artifacts.clone(),
+    );
+
+    let mut info = AccessInfo {
+        provider: inputs.get("hyperscaler").cloned(),
+        cluster_name: inputs.get("cluster_name").cloned(),
+        region: inputs.get("region").cloned(),
+        ..Default::default()
+    };
+
+    let kubeconfig = artifacts.join("kubeconfig");
+    if kubeconfig.exists() {
+        info.kubeconfig_path = Some(kubeconfig.display().to_string());
+    }
+
+    info.openshift_api_url = oc_get(&ctx, &["whoami", "--show-server"]).await;
+    info.openshift_console_url = oc_get(&ctx, &["whoami", "--show-console"]).await;
+
+    // kubeadmin password is written by openshift-install as a plaintext artifact.
+    if let Ok(pw) = std::fs::read_to_string(artifacts.join("cluster/auth/kubeadmin-password")) {
+        let pw = pw.trim().to_string();
+        if !pw.is_empty() {
+            info.kubeadmin_user = Some("kubeadmin".to_string());
+            info.kubeadmin_password = Some(pw);
+        }
+    }
+
+    // Software Hub web console + admin credentials (only present once installed).
+    if let Some(host) = oc_get(
+        &ctx,
+        &["get", "zenservice", "lite-cr", "-n", &inst_ns, "-o", "jsonpath={.status.url}"],
+    )
+    .await
+    {
+        info.hub_console_url = Some(if host.starts_with("http") {
+            host
+        } else {
+            format!("https://{host}")
+        });
+        info.hub_admin_user = oc_get(
+            &ctx,
+            &["extract", "secret/platform-auth-idp-credentials", "-n", &inst_ns, "--keys=admin_username", "--to=-"],
+        )
+        .await
+        .or_else(|| Some("cpadmin".to_string()));
+        info.hub_admin_password = oc_get(
+            &ctx,
+            &["extract", "secret/platform-auth-idp-credentials", "-n", &inst_ns, "--keys=admin_password", "--to=-"],
+        )
+        .await;
+    }
+
+    if info.openshift_console_url.is_some() {
+        info.notes.push(
+            "If a URL doesn't resolve locally (macOS DNS cache), the api/*.apps records are live in \
+             AWS Route53 — flush DNS (sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder) \
+             or pin them in /etc/hosts."
+                .to_string(),
+        );
+    }
+
+    Json(info).into_response()
 }
 
 #[derive(Debug, Default, Deserialize)]
