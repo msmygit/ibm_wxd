@@ -69,7 +69,9 @@ All tests are **hermetic** (mock `CommandRunner`, no cloud spend). Keep them tha
 
 ## The three extension seams (this is why the tool exists)
 
-See [`docs/architecture.md`](docs/architecture.md) §12 for full signatures.
+See [`docs/architecture.md`](docs/architecture.md) §12 for full signatures, and
+**[`docs/extending.md`](docs/extending.md)** for copy-pasteable worked examples
+(a step/module, an `AzureProvisioner`, a `ServiceInstaller`, a new run mode).
 
 ### Add a step / module
 Implement `sw_core::Step` (group in a `Module`), register the module in the

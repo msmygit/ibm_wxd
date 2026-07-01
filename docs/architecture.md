@@ -321,7 +321,8 @@ flowchart LR
 ## 12. The three extension seams
 
 This is the answer to "can I extend it?" — **yes, at three clean seams**, none of
-which require touching the orchestrator.
+which require touching the orchestrator. Copy-pasteable, signature-accurate
+recipes for each are in **[`extending.md`](extending.md)**.
 
 ### A. Add a **step** or **module**
 Implement `Step` (and optionally group steps in a `Module`), then register the

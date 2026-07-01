@@ -247,5 +247,6 @@ The orchestrator + web server are generic IBM Software Hub infrastructure
 at **three seams** — a `Module`/`Step`, a `Provisioner` (new cloud), or a
 `ServiceInstaller` / catalog entry (new service) — none of which touch the
 orchestrator. See [`docs/architecture.md`](docs/architecture.md) (§12) for the
-extension guide, and `AGENTS.md` for AI-agent onboarding. Design specs live under
+design and [`docs/extending.md`](docs/extending.md) for copy-pasteable worked
+examples, plus `AGENTS.md` for AI-agent onboarding. Design specs live under
 `docs/superpowers/specs/`.
