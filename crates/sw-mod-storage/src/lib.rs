@@ -4,10 +4,11 @@
 //! A bare OpenShift IPI cluster on AWS only has EBS (`gp3-csi`, block/RWO). The
 //! Software Hub control plane and watsonx.data also need a ReadWriteMany (file)
 //! class, so this module stands up **AWS EFS**:
-//!   1. `ensure-efs`      — create an EFS filesystem + per-subnet mount targets,
-//!                          allow NFS in the node security group.
-//!   2. `install-efs-csi` — install the AWS EFS CSI Driver Operator.
-//!   3. `efs-storage-class` — create the `efs-sc` StorageClass.
+//!
+//! 1. `ensure-efs`      — create an EFS filesystem + per-subnet mount targets,
+//!    allow NFS in the node security group.
+//! 2. `install-efs-csi` — install the AWS EFS CSI Driver Operator.
+//! 3. `efs-storage-class` — create the `efs-sc` StorageClass.
 //!
 //! Everything goes through the `CommandRunner` seam (`aws` + `oc`), so it stays
 //! hermetically testable. AWS-only today; for other clouds (or an existing

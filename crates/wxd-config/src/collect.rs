@@ -51,7 +51,7 @@ pub struct ParsedAnswers {
 /// Parse an answers file body. Each non-blank, non-comment line must be
 /// `KEY=VALUE`. Surrounding whitespace around KEY is trimmed; the VALUE is taken
 /// after the first `=` (so values may contain `=`) and then **shell-unquoted**
-/// (see [`unquote_shell_value`]) so that the parser is the exact inverse of
+/// (see `unquote_shell_value`) so that the parser is the exact inverse of
 /// [`crate::generate::shell_quote`].
 ///
 /// This guarantees the round-trip invariant the tool advertises:
@@ -174,7 +174,7 @@ fn unquote_shell_value(value: &str) -> Result<String, String> {
 
 /// Resolve every variable's value from file + env, then (only in
 /// [`Mode::Interactive`]) prompt for whatever is still missing, and finally
-/// apply any [`VarSpec::default`] for a value still absent or left empty.
+/// apply any `VarSpec` default for a value still absent or left empty.
 ///
 /// Precedence (highest first): environment variable, answers file, interactive
 /// input, spec default. The default is applied to a still-missing value (and to

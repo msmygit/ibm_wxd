@@ -348,6 +348,7 @@ struct RemainingResource {
 /// Handles both ARN shapes:
 ///   - `arn:aws:<service>:<region>:<acct>:<resourcetype>/<id>`
 ///   - `arn:aws:<service>:<region>:<acct>:<resourcetype>:<id>`
+///
 /// When the resource portion has no separator (e.g. an S3 bucket
 /// `arn:aws:s3:::bucket`), the whole resource is treated as the id with an empty
 /// resource_type.
@@ -2087,8 +2088,6 @@ async fn aws_ensure_dns(ctx: &StepContext) -> StepOutcome {
 
     aws_create_zone(ctx, &base, &zones, &env).await
 }
-
-/// Render and write `install-config.yaml` into the cluster dir.
 
 /// Render and write `install-config.yaml` from the run's inputs/secrets. Returns
 /// the path on success, or a `StepOutcome` (NeedsInput for the pull secret, or
