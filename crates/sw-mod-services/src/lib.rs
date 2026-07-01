@@ -187,6 +187,10 @@ fn operands_ns(ctx: &StepContext) -> String {
     ctx.input("PROJECT_CPD_INST_OPERANDS").unwrap_or("cpd-instance").to_string()
 }
 
+fn operators_ns(ctx: &StepContext) -> String {
+    ctx.input("PROJECT_CPD_INST_OPERATORS").unwrap_or("cpd-operators").to_string()
+}
+
 fn service_version(ctx: &StepContext) -> String {
     ctx.input("VERSION").unwrap_or("5.4.0").to_string()
 }
@@ -279,6 +283,11 @@ impl Step for ClusterResourcesStep {
         let patch_id = service_patch_id(ctx);
         let env = services_cpd_env(ctx);
 
+        // cpd-cli REQUIRES --operator_ns when --cluster_resources=true (it fails
+        // instantly with "To generate cluster scoped resources, --operator_ns
+        // argument is required" otherwise). The platform's equivalent step passes
+        // it too.
+        let op_ns = operators_ns(ctx);
         ctx.log(format!("generating cluster-scoped resources (CRDs) for [{components}]"));
         let dl = vec![
             "manage".into(),
@@ -286,6 +295,7 @@ impl Step for ClusterResourcesStep {
             format!("--release={version}"),
             format!("--patch_id={patch_id}"),
             format!("--components={components}"),
+            format!("--operator_ns={op_ns}"),
             "--cluster_resources=true".into(),
         ];
         match ctx.run_in_cluster_pty_env("cpd-cli", &dl, &env, &[]).await {
@@ -338,7 +348,7 @@ impl Step for ApplyComponentsStep {
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let components = selected_components(ctx);
-        let op_ns = ctx.input("PROJECT_CPD_INST_OPERATORS").unwrap_or("cpd-operators").to_string();
+        let op_ns = operators_ns(ctx);
         let inst_ns = operands_ns(ctx);
         let version = service_version(ctx);
         let patch_id = service_patch_id(ctx);
@@ -639,7 +649,10 @@ mod tests {
         let ctx = ctx_inputs(runner.clone(), &[("components", "watsonx_data")]);
         assert_eq!(ClusterResourcesStep.run(&ctx).await, StepOutcome::Completed);
         let calls = runner.calls();
-        assert!(calls.iter().any(|c| c.contains("case-download") && c.contains("--cluster_resources=true")));
+        // cpd-cli requires --operator_ns whenever --cluster_resources=true.
+        assert!(calls.iter().any(|c| c.contains("case-download")
+            && c.contains("--cluster_resources=true")
+            && c.contains("--operator_ns=cpd-operators")));
         assert!(calls.iter().any(|c| c.contains("cluster_scoped_resources.yaml") && c.contains("--server-side")));
     }
 
