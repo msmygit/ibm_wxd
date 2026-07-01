@@ -492,13 +492,12 @@ impl Provisioner for AwsProvisioner {
         let outcome = if started {
             ctx.log("install already in progress — resuming (wait-for bootstrap + install-complete)");
             ctx.progress(20);
-            let bc = ctx
-                .run_with_env(
-                    "openshift-install",
-                    &["wait-for".into(), "bootstrap-complete".into(), "--dir".into(), dir_str.clone()],
-                    &env,
-                )
-                .await;
+            let bc = run_openshift_install_streaming(
+                ctx,
+                &["wait-for".into(), "bootstrap-complete".into(), "--dir".into(), dir_str.clone()],
+                &env,
+            )
+            .await;
             if matches!(&bc, Ok(o) if o.success()) {
                 // Bootstrap is done — remove the bootstrap node (best-effort;
                 // a normal `create cluster` does this automatically).
@@ -511,8 +510,8 @@ impl Provisioner for AwsProvisioner {
                     .await;
             }
             ctx.progress(60);
-            ctx.run_with_env(
-                "openshift-install",
+            run_openshift_install_streaming(
+                ctx,
                 &["wait-for".into(), "install-complete".into(), "--dir".into(), dir_str.clone()],
                 &env,
             )
@@ -520,8 +519,8 @@ impl Provisioner for AwsProvisioner {
         } else {
             ctx.log("provisioning OpenShift cluster via openshift-install (AWS IPI)");
             ctx.progress(10);
-            ctx.run_with_env(
-                "openshift-install",
+            run_openshift_install_streaming(
+                ctx,
                 &["create".into(), "cluster".into(), "--dir".into(), dir_str.clone()],
                 &env,
             )
@@ -1017,6 +1016,112 @@ fn install_log_tail(ctx: &StepContext) -> String {
     // The last chunk is where the API-wait loop reports "no such host".
     let tail_start = body.len().saturating_sub(8192);
     body[tail_start..].to_string()
+}
+
+/// Extract a concise, user-facing progress message from a single raw
+/// `.openshift_install.log` line, or `None` if the line isn't a milestone.
+///
+/// openshift-install log lines look like:
+///   `time="...Z" level=info msg="Waiting up to 15m0s ... to become ready..."`
+/// We surface `level=info` lines (extracting the text after `msg=`, stripping a
+/// leading/trailing double-quote) plus any line containing `Still waiting for`
+/// (the useful cluster-init waits). Everything else — `level=debug` noise and the
+/// klog `I0630…`/`E0630…` lines — is skipped. Messages are truncated to ~140 chars.
+fn extract_progress_line(raw: &str) -> Option<String> {
+    let line = raw.trim();
+    if line.is_empty() {
+        return None;
+    }
+    // Skip klog lines (I0630…, E0630…, W0630…, F0630…) — noise, not milestones.
+    if let Some(c) = line.chars().next() {
+        if matches!(c, 'I' | 'E' | 'W' | 'F')
+            && line.get(1..5).map(|d| d.chars().all(|c| c.is_ascii_digit())).unwrap_or(false)
+        {
+            return None;
+        }
+    }
+
+    let is_info = line.contains("level=info");
+    let is_still_waiting = line.contains("Still waiting for");
+    if !is_info && !is_still_waiting {
+        return None; // level=debug and everything else
+    }
+
+    // Prefer the text after `msg=`, stripping surrounding double-quotes; fall
+    // back to the whole line (e.g. a bare "Still waiting…" without msg=).
+    let msg = match line.split_once("msg=") {
+        Some((_, rest)) => rest.trim().trim_matches('"').trim(),
+        None => line,
+    };
+    if msg.is_empty() {
+        return None;
+    }
+    let mut out = msg.to_string();
+    if out.chars().count() > 140 {
+        out = out.chars().take(140).collect::<String>();
+    }
+    Some(out)
+}
+
+/// Read newly-appended bytes of the install log from `offset` and emit any new
+/// milestone lines to the live log, de-duplicating consecutive identical
+/// messages. `state` is `(byte_offset, last_emitted_message)`, threaded across
+/// calls so we never replay old lines nor spam a repeated "Still waiting…".
+fn emit_new_progress(ctx: &StepContext, path: &std::path::Path, state: &mut (u64, String)) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    // If the file was truncated/rotated, restart from its beginning.
+    if len < state.0 {
+        state.0 = 0;
+    }
+    if f.seek(SeekFrom::Start(state.0)).is_err() {
+        return;
+    }
+    let mut buf = String::new();
+    if f.read_to_string(&mut buf).is_err() {
+        return;
+    }
+    state.0 = state.0.saturating_add(buf.len() as u64);
+    for raw in buf.lines() {
+        if let Some(msg) = extract_progress_line(raw) {
+            if msg != state.1 {
+                ctx.log(msg.clone());
+                state.1 = msg;
+            }
+        }
+    }
+}
+
+/// Run an `openshift-install` command while concurrently tailing the cluster's
+/// `.openshift_install.log`, emitting milestone lines to the live log so the UI
+/// shows real-time progress during the ~40-minute create/wait-for phases. The
+/// command still runs through the [`CommandRunner`] seam; only the log tail uses
+/// `std::fs`. Returns exactly the command's result — semantics are unchanged.
+async fn run_openshift_install_streaming(
+    ctx: &StepContext,
+    args: &[String],
+    env: &[(String, String)],
+) -> std::io::Result<sw_core::CommandOutput> {
+    let log_path = cluster_dir(ctx).join(".openshift_install.log");
+    // Start from the current end of the file so we don't replay old lines.
+    let offset = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    let mut state = (offset, String::new());
+    let cmd = ctx.run_with_env("openshift-install", args, env);
+    tokio::pin!(cmd);
+    loop {
+        tokio::select! {
+            res = &mut cmd => {
+                emit_new_progress(ctx, &log_path, &mut state);
+                return res;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                emit_new_progress(ctx, &log_path, &mut state);
+            }
+        }
+    }
 }
 
 /// Choose the failure `next_steps` for a failed `openshift-install`: the specific
@@ -2473,6 +2578,49 @@ mod tests {
         // Unrelated failures are not misclassified.
         assert!(!is_api_dns_failure("error: EC2 quota exceeded"));
         assert!(!is_api_dns_failure(""));
+    }
+
+    #[test]
+    fn extract_progress_line_surfaces_info_and_still_waiting() {
+        // An info line: extract the msg text, drop the surrounding quotes.
+        let info = r#"time="2026-06-30T00:00:00Z" level=info msg="Waiting up to 15m0s (until 1:15AM) for network infrastructure to become ready...""#;
+        assert_eq!(
+            extract_progress_line(info).as_deref(),
+            Some("Waiting up to 15m0s (until 1:15AM) for network infrastructure to become ready...")
+        );
+
+        // A debug line → None (noise).
+        let debug = r#"time="2026-06-30T00:00:00Z" level=debug msg="Fetching Terraform Variables...""#;
+        assert_eq!(extract_progress_line(debug), None);
+
+        // A klog error line → None.
+        assert_eq!(
+            extract_progress_line("E0630 12:00:00.123456   1234 reflector.go:138] pkg/mod: failed"),
+            None
+        );
+        // A klog info line → None too.
+        assert_eq!(
+            extract_progress_line("I0630 12:00:00.123456   1234 request.go:123] throttling"),
+            None
+        );
+
+        // A "Still waiting for" cluster-init line is surfaced even as info.
+        let still = r#"time="2026-06-30T00:00:00Z" level=info msg="Still waiting for the cluster to initialize: Cluster operators authentication, console are not available""#;
+        assert_eq!(
+            extract_progress_line(still).as_deref(),
+            Some("Still waiting for the cluster to initialize: Cluster operators authentication, console are not available")
+        );
+
+        // Blank/whitespace → None.
+        assert_eq!(extract_progress_line("   "), None);
+    }
+
+    #[test]
+    fn extract_progress_line_truncates_long_messages() {
+        let long_msg = "x".repeat(300);
+        let raw = format!(r#"time="Z" level=info msg="{long_msg}""#);
+        let out = extract_progress_line(&raw).unwrap();
+        assert_eq!(out.chars().count(), 140, "message should be truncated to 140 chars");
     }
 
     #[test]
