@@ -236,6 +236,11 @@ impl Step for ApplyComponentsStep {
         // a file (RWX) storage class. Defaults match a provisioned AWS cluster.
         let block_sc = ctx.input("block_storage_class").unwrap_or("gp3-csi").to_string();
         let file_sc = ctx.input("file_storage_class").unwrap_or("efs-sc").to_string();
+        // VERSION pins the olm-utils image cpd-cli uses (see softwarehub::cpd_env).
+        let mut cpd_env = vec![("VERSION".to_string(), version.clone())];
+        if let Some(img) = ctx.input("OLM_UTILS_IMAGE").filter(|v| !v.is_empty()) {
+            cpd_env.push(("OLM_UTILS_IMAGE".to_string(), img.to_string()));
+        }
 
         // install-components installs from locally-downloaded CASE packages —
         // fetch them for the selected components first.
@@ -246,7 +251,7 @@ impl Step for ApplyComponentsStep {
             format!("--release={version}"),
             format!("--components={components}"),
         ];
-        match ctx.run_in_cluster_pty("cpd-cli", &dl).await {
+        match ctx.run_in_cluster_pty_env("cpd-cli", &dl, &cpd_env, &[]).await {
             Ok(o) if o.success() => {}
             Ok(o) => {
                 return StepOutcome::Failed {
@@ -276,7 +281,7 @@ impl Step for ApplyComponentsStep {
             format!("--block_storage_class={block_sc}"),
             format!("--file_storage_class={file_sc}"),
         ];
-        match ctx.run_in_cluster_pty("cpd-cli", &args).await {
+        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env, &[]).await {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed

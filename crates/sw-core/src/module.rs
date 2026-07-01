@@ -174,6 +174,20 @@ impl StepContext {
         args: &[String],
         extra_mask: &[String],
     ) -> std::io::Result<CommandOutput> {
+        self.run_in_cluster_pty_env(program, args, &[], extra_mask).await
+    }
+
+    /// Like [`run_in_cluster_pty_masking`](Self::run_in_cluster_pty_masking) but
+    /// also exports `extra_env` to the command (in addition to `KUBECONFIG`). Used
+    /// to pass `VERSION`/`OLM_UTILS_IMAGE` to `cpd-cli manage`, which pins the
+    /// olm-utils image (and thus the installable Software Hub release) by env var.
+    pub async fn run_in_cluster_pty_env(
+        &self,
+        program: &str,
+        args: &[String],
+        extra_env: &[(String, String)],
+        extra_mask: &[String],
+    ) -> std::io::Result<CommandOutput> {
         let mut line = self.cmdline(program, args);
         for v in extra_mask {
             if v.len() >= 4 && line.contains(v.as_str()) {
@@ -182,7 +196,8 @@ impl StepContext {
         }
         self.log(format!("$ {line}"));
         let kc = self.kubeconfig_path().to_string_lossy().into_owned();
-        let env = [("KUBECONFIG".to_string(), kc)];
+        let mut env = vec![("KUBECONFIG".to_string(), kc)];
+        env.extend(extra_env.iter().cloned());
         let (wrapped_program, wrapped_args) = pty_wrap(program, args);
         self.runner.run_with_env(&wrapped_program, &wrapped_args, &env).await
     }

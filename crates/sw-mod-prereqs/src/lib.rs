@@ -51,9 +51,13 @@ fn platform() -> Platform {
 const MIRROR: &str = "https://mirror.openshift.com/pub/openshift-v4";
 
 fn helm_script(p: &Platform) -> String {
+    // IBM Software Hub supports Helm 3.19/3.20 (Helm is only used to debug
+    // cpd-cli commands). Pin to the latest supported 3.20/3.19 patch — NOT the
+    // absolute latest, which is now Helm 4.x.
     format!(
         "set -e; BIN=\"$HOME/.wxd/bin\"; mkdir -p \"$BIN\"; \
-         V=$(curl -fsSL https://api.github.com/repos/helm/helm/releases/latest | grep '\"tag_name\"' | head -1 | sed -E 's/.*\"v?([0-9.]+)\".*/\\1/'); \
+         V=$(curl -fsSL 'https://api.github.com/repos/helm/helm/releases?per_page=100' | grep '\"tag_name\"' | sed -E 's/.*\"v?([0-9.]+)\".*/\\1/' | grep -E '^3\\.(20|19)\\.' | sort -V | tail -1); \
+         test -n \"$V\"; \
          curl -fsSL \"https://get.helm.sh/helm-v${{V}}-{os}-{arch}.tar.gz\" -o /tmp/wxd-helm.tgz; \
          tar xzf /tmp/wxd-helm.tgz -C /tmp; mv /tmp/{os}-{arch}/helm \"$BIN/helm\"; chmod +x \"$BIN/helm\"",
         os = p.dl_os,
