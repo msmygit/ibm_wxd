@@ -137,6 +137,13 @@ button.ghost { background: transparent; }
 .banner.ok { border-color: var(--ok); color: var(--ok); }
 .banner.fail { border-color: var(--fail); color: var(--fail); }
 .banner.info { border-color: var(--primary); color: var(--primary); }
+/* "Action needed" — amber, visually louder than info to pull the user in. */
+.banner.attention {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  font-weight: 600;
+}
 
 .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .step {
@@ -241,6 +248,12 @@ button.ghost { background: transparent; }
 #prereqs-panel.collapsed > h2 { order: 0; }
 #prereqs-panel.collapsed > #prereqs-banner { order: 1; margin: 0; }
 #prereqs-panel.collapsed > .actions { order: 2; margin: 0; }
+
+/* Input panel: highlight while a run is awaiting input from the user. */
+#input-panel.awaiting {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 30%, transparent);
+}
 
 /* Credentials: hide non-selected provider groups */
 .cred-group[hidden] { display: none; }
