@@ -540,14 +540,15 @@ impl Provisioner for AwsProvisioner {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
-            Ok(out) => StepOutcome::Failed {
-                error: format!(
+            Ok(out) => {
+                let error = format!(
                     "openshift-install failed (exit {}): {}",
                     out.status,
                     out.stderr.trim()
-                ),
-                next_steps: provision_failure_next_steps(),
-            },
+                );
+                let next_steps = provision_next_steps_for_failure(ctx, &out.stderr).await;
+                StepOutcome::Failed { error, next_steps }
+            }
             Err(e) => StepOutcome::Failed {
                 error: format!("could not run openshift-install: {e}"),
                 next_steps: provision_failure_next_steps(),
@@ -862,6 +863,185 @@ fn write_destroy_report_files(
     let json_path = ctx.artifacts_dir().join("destroy-report.json");
     if let Err(e) = std::fs::write(&json_path, serde_json::to_string_pretty(&json).unwrap_or_default()) {
         ctx.log(format!("warning: could not write {}: {e}", json_path.display()));
+    }
+}
+
+/// The Kubernetes API FQDN for this run, `api.<cluster_name>.<base_domain>`,
+/// when both inputs are present (base domain stripped of any trailing dot).
+fn api_fqdn(ctx: &StepContext) -> Option<String> {
+    let cluster = ctx.input("cluster_name").filter(|s| !s.trim().is_empty())?;
+    let base = ctx.input("base_domain").filter(|s| !s.trim().is_empty())?;
+    Some(format!("api.{}.{}", cluster.trim(), base.trim().trim_end_matches('.')))
+}
+
+/// Whether an `openshift-install` failure (install-log tail or stderr) is the
+/// classic "the installer can't resolve the cluster API hostname locally" case —
+/// the record is live in AWS but the workstation's resolver returns NXDOMAIN
+/// (macOS negative-DNS cache) or a stale `/etc/hosts` points at dead IPs.
+fn is_api_dns_failure(log_or_err: &str) -> bool {
+    let s = log_or_err.to_ascii_lowercase();
+    s.contains("no such host") || s.contains("failed waiting for kubernetes api")
+}
+
+/// Parse `aws route53 list-resource-record-sets --output json` and return the
+/// IPv4 addresses of the `A` record whose name matches `api_fqdn` (Route53 names
+/// carry a trailing dot, which we normalize away for comparison).
+fn parse_api_record_ips(list_rrsets_json: &str, api_fqdn: &str) -> Vec<String> {
+    let want = api_fqdn.trim_end_matches('.').to_ascii_lowercase();
+    serde_json::from_str::<serde_json::Value>(list_rrsets_json)
+        .ok()
+        .and_then(|v| v.get("ResourceRecordSets").and_then(|r| r.as_array()).cloned())
+        .map(|sets| {
+            sets.iter()
+                .filter(|rs| {
+                    rs.get("Type").and_then(|t| t.as_str()) == Some("A")
+                        && rs
+                            .get("Name")
+                            .and_then(|n| n.as_str())
+                            .map(|n| n.trim_end_matches('.').eq_ignore_ascii_case(&want))
+                            .unwrap_or(false)
+                })
+                .flat_map(|rs| {
+                    rs.get("ResourceRecords")
+                        .and_then(|r| r.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .filter_map(|rr| rr.get("Value").and_then(|v| v.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Resolve the real IPs for the cluster API hostname, best-effort, from two
+/// independent sources: the local resolver (may itself fail — that's the bug we
+/// remediate) and the authoritative Route53 A record. De-duped, order preserved.
+async fn resolve_api_ips(ctx: &StepContext, fqdn: &str) -> Vec<String> {
+    let mut ips: Vec<String> = Vec::new();
+    let mut push = |ip: String| {
+        if !ip.is_empty() && !ips.contains(&ip) {
+            ips.push(ip);
+        }
+    };
+
+    // Local resolver — non-blocking on the fact that it may return no such host.
+    if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(fqdn, 6443u16)) {
+        for a in addrs {
+            push(a.ip().to_string());
+        }
+    }
+
+    // Authoritative Route53 A record in the base_domain hosted zone.
+    if let Some(base) = ctx.input("base_domain").filter(|d| !d.trim().is_empty()) {
+        let base = base.trim().trim_end_matches('.').to_string();
+        let env = aws_env(ctx);
+        let listing = ctx
+            .run_with_env(
+                "aws",
+                &["route53".into(), "list-hosted-zones".into(), "--output".into(), "json".into()],
+                &env,
+            )
+            .await;
+        if let Ok(o) = &listing {
+            if o.success() {
+                let zones = parse_public_zones(&o.stdout);
+                let want = format!("{base}.");
+                if let Some((_, id)) = zones.iter().find(|(n, _)| n == &want) {
+                    let rrsets = ctx
+                        .run_with_env(
+                            "aws",
+                            &[
+                                "route53".into(),
+                                "list-resource-record-sets".into(),
+                                "--hosted-zone-id".into(),
+                                id.clone(),
+                                "--output".into(),
+                                "json".into(),
+                            ],
+                            &env,
+                        )
+                        .await;
+                    if let Ok(o) = &rrsets {
+                        if o.success() {
+                            for ip in parse_api_record_ips(&o.stdout, fqdn) {
+                                push(ip);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ips
+}
+
+/// Build the DNS-resolution remediation `next_steps` for the failed provision.
+/// Names the exact hostname and, when the IPs are known, the exact
+/// copy-pasteable macOS command to pin them in `/etc/hosts` and flush the cache.
+/// When IPs couldn't be resolved, falls back to instructing a public `dig`.
+fn dns_remediation_next_steps(cluster_name: &str, fqdn: &str, ips: &[String]) -> Vec<String> {
+    let mut steps = vec![format!(
+        "The installer could not resolve `{fqdn}` locally (a known macOS negative-DNS-cache / \
+         stale /etc/hosts issue). The record IS live in AWS — the cluster is fine; your \
+         workstation's resolver isn't."
+    )];
+    if ips.is_empty() {
+        steps.push(format!(
+            "Find the live IPs: `dig +short A {fqdn} @8.8.8.8`. Then pin them, flush DNS, and Retry: \
+             `sudo sed -i '' '/{cluster_name}/d' /etc/hosts; printf '<ip1> {fqdn}\\n<ip2> {fqdn}\\n' | \
+             sudo tee -a /etc/hosts >/dev/null && sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder`"
+        ));
+    } else {
+        let printf_body: String = ips.iter().map(|ip| format!("{ip} {fqdn}\\n")).collect();
+        steps.push(format!(
+            "Fix it, then Retry this step: \
+             `sudo sed -i '' '/{cluster_name}/d' /etc/hosts; printf '{printf_body}' | \
+             sudo tee -a /etc/hosts >/dev/null && sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder`"
+        ));
+    }
+    steps.push(
+        "This only affects your local machine; no cloud resources changed. After the fix the \
+         installer resolves the API and completes."
+            .to_string(),
+    );
+    steps
+}
+
+/// Read the tail of the installer's `.openshift_install.log` (best-effort) so we
+/// can classify the failure even when the API-wait error was only written there
+/// and not to the command's stderr.
+fn install_log_tail(ctx: &StepContext) -> String {
+    let path = cluster_dir(ctx).join(".openshift_install.log");
+    let body = std::fs::read_to_string(path).unwrap_or_default();
+    // The last chunk is where the API-wait loop reports "no such host".
+    let tail_start = body.len().saturating_sub(8192);
+    body[tail_start..].to_string()
+}
+
+/// Choose the failure `next_steps` for a failed `openshift-install`: the specific
+/// DNS-resolution remediation when the failure is the local-resolver / stale
+/// `/etc/hosts` case, otherwise the generic provisioning guidance. Emits the
+/// chosen DNS guidance to the live log too, so it lands in events.log.
+async fn provision_next_steps_for_failure(ctx: &StepContext, stderr: &str) -> Vec<String> {
+    let log_tail = install_log_tail(ctx);
+    let dns = is_api_dns_failure(stderr) || is_api_dns_failure(&log_tail);
+    let fqdn = api_fqdn(ctx);
+    match (dns, fqdn) {
+        (true, Some(fqdn)) => {
+            let cluster = ctx.input("cluster_name").unwrap_or("wxd").to_string();
+            let ips = resolve_api_ips(ctx, &fqdn).await;
+            ctx.log(format!(
+                "detected local DNS-resolution failure for the cluster API ({fqdn}); \
+                 the record is live in AWS — see next steps to fix your local resolver and Retry"
+            ));
+            let steps = dns_remediation_next_steps(&cluster, &fqdn, &ips);
+            for s in &steps {
+                ctx.log(s.clone());
+            }
+            steps
+        }
+        _ => provision_failure_next_steps(),
     }
 }
 
@@ -2253,5 +2433,123 @@ mod tests {
         let calls = runner.calls();
         assert!(calls.iter().any(|c| c.contains("efs delete-mount-target --mount-target-id fsmt-1")), "{calls:?}");
         assert!(calls.iter().any(|c| c.contains("efs delete-file-system --file-system-id fs-9")), "{calls:?}");
+    }
+
+    #[test]
+    fn api_fqdn_builds_from_inputs() {
+        let dir = temp_dir("api-fqdn");
+        let ctx = ctx_with(
+            Arc::new(MockCommandRunner::new(vec![])),
+            full_spec_inputs(),
+            BTreeMap::new(),
+            dir,
+        );
+        assert_eq!(api_fqdn(&ctx).as_deref(), Some("api.wxd-test.example.com"));
+    }
+
+    #[test]
+    fn api_fqdn_strips_trailing_dot_and_needs_both_inputs() {
+        let dir = temp_dir("api-fqdn-partial");
+        let mut inputs = full_spec_inputs();
+        inputs.insert("base_domain".into(), "example.com.".into());
+        let ctx = ctx_with(Arc::new(MockCommandRunner::new(vec![])), inputs, BTreeMap::new(), dir.clone());
+        assert_eq!(api_fqdn(&ctx).as_deref(), Some("api.wxd-test.example.com"));
+
+        // Missing base_domain → None.
+        let mut only_name = BTreeMap::new();
+        only_name.insert("cluster_name".into(), "wxd".into());
+        let ctx2 = ctx_with(Arc::new(MockCommandRunner::new(vec![])), only_name, BTreeMap::new(), dir);
+        assert_eq!(api_fqdn(&ctx2), None);
+    }
+
+    #[test]
+    fn is_api_dns_failure_detects_signatures() {
+        assert!(is_api_dns_failure(
+            "dial tcp: lookup api.wxd.example.com on 1.1.1.1:53: no such host"
+        ));
+        assert!(is_api_dns_failure("ERROR Failed waiting for Kubernetes API"));
+        // Case-insensitive.
+        assert!(is_api_dns_failure("NO SUCH HOST"));
+        // Unrelated failures are not misclassified.
+        assert!(!is_api_dns_failure("error: EC2 quota exceeded"));
+        assert!(!is_api_dns_failure(""));
+    }
+
+    #[test]
+    fn parse_api_record_ips_reads_two_a_values() {
+        let json = r#"{"ResourceRecordSets":[
+            {"Name":"example.com.","Type":"SOA","ResourceRecords":[{"Value":"ns.example.com."}]},
+            {"Name":"api.wxd.example.com.","Type":"A","ResourceRecords":[
+                {"Value":"52.1.2.3"},{"Value":"34.4.5.6"}
+            ]},
+            {"Name":"*.apps.wxd.example.com.","Type":"A","ResourceRecords":[{"Value":"10.0.0.9"}]}
+        ]}"#;
+        // Trailing dot on the query name is tolerated.
+        assert_eq!(
+            parse_api_record_ips(json, "api.wxd.example.com"),
+            vec!["52.1.2.3".to_string(), "34.4.5.6".to_string()]
+        );
+        // A non-matching hostname yields nothing.
+        assert!(parse_api_record_ips(json, "api.other.example.com").is_empty());
+        // Garbage in → empty out (no panic).
+        assert!(parse_api_record_ips("not json", "api.wxd.example.com").is_empty());
+    }
+
+    #[test]
+    fn dns_remediation_with_ips_pins_exact_hosts_line() {
+        let steps = dns_remediation_next_steps(
+            "wxd-test",
+            "api.wxd-test.example.com",
+            &["52.1.2.3".to_string(), "34.4.5.6".to_string()],
+        );
+        let joined = steps.join("\n");
+        assert!(joined.contains("api.wxd-test.example.com"), "{joined}");
+        assert!(joined.contains("52.1.2.3 api.wxd-test.example.com"), "{joined}");
+        assert!(joined.contains("34.4.5.6 api.wxd-test.example.com"), "{joined}");
+        assert!(joined.contains("/wxd-test/d' /etc/hosts"), "{joined}");
+        assert!(joined.contains("killall -HUP mDNSResponder"), "{joined}");
+    }
+
+    #[test]
+    fn dns_remediation_without_ips_falls_back_to_dig() {
+        let steps = dns_remediation_next_steps("wxd-test", "api.wxd-test.example.com", &[]);
+        let joined = steps.join("\n");
+        assert!(joined.contains("dig +short A api.wxd-test.example.com @8.8.8.8"), "{joined}");
+        assert!(joined.contains("killall -HUP mDNSResponder"), "{joined}");
+    }
+
+    #[tokio::test]
+    async fn create_cluster_dns_failure_yields_remediation() {
+        let dir = temp_dir("create-dns-fail");
+        // openshift-install fails with the classic local-resolution error, and
+        // Route53 reports the live api A record with two IPs.
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            MockResponse::fail(
+                "create cluster",
+                1,
+                "dial tcp: lookup api.wxd-test.example.com: no such host",
+            ),
+            MockResponse::ok(
+                "route53 list-hosted-zones",
+                r#"{"HostedZones":[{"Name":"example.com.","Id":"/hostedzone/Z1","Config":{"PrivateZone":false}}]}"#,
+            ),
+            MockResponse::ok(
+                "route53 list-resource-record-sets",
+                r#"{"ResourceRecordSets":[{"Name":"api.wxd-test.example.com.","Type":"A","ResourceRecords":[{"Value":"52.1.2.3"},{"Value":"34.4.5.6"}]}]}"#,
+            ),
+        ]));
+        let mut secrets = BTreeMap::new();
+        secrets.insert("pull_secret".to_string(), "{\"auths\":{}}".to_string());
+        let ctx = ctx_with(runner, full_spec_inputs(), secrets, dir);
+        match CreateClusterStep::new().run(&ctx).await {
+            StepOutcome::Failed { error, next_steps } => {
+                assert!(error.contains("no such host"), "error: {error}");
+                let joined = next_steps.join("\n");
+                assert!(joined.contains("could not resolve `api.wxd-test.example.com`"), "{joined}");
+                assert!(joined.contains("52.1.2.3 api.wxd-test.example.com"), "{joined}");
+                assert!(joined.contains("34.4.5.6 api.wxd-test.example.com"), "{joined}");
+            }
+            other => panic!("expected Failed with DNS remediation, got {other:?}"),
+        }
     }
 }
