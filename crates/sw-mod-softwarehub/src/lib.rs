@@ -290,6 +290,60 @@ impl Step for AddEntitlement {
     }
 }
 
+/// Wait for every node to be `Ready` after the entitlement credential updated
+/// the global pull secret. That update triggers a MachineConfig rollout — nodes
+/// briefly become `Ready,SchedulingDisabled` and reboot — and installs must not
+/// proceed until it finishes. Retry-able so the orchestrator re-checks.
+struct WaitNodesReady;
+
+#[async_trait]
+impl Step for WaitNodesReady {
+    fn id(&self) -> &str {
+        "wait-nodes-ready"
+    }
+    fn title(&self) -> &str {
+        "Wait for nodes (pull-secret rollout)"
+    }
+    async fn run(&self, ctx: &StepContext) -> StepOutcome {
+        ctx.log("checking that all nodes are Ready after the pull-secret update");
+        match ctx.run_in_cluster("oc", &["get".into(), "nodes".into(), "--no-headers".into()]).await {
+            Ok(o) if o.success() => {
+                let lines: Vec<&str> = o.stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+                if lines.is_empty() {
+                    return StepOutcome::Failed {
+                        error: "no nodes reported".into(),
+                        next_steps: vec!["Ensure `oc` has an active session against the cluster, then retry.".into()],
+                    };
+                }
+                // STATUS column: "Ready" | "Ready,SchedulingDisabled" | "NotReady" …
+                let not_ready: Vec<String> = lines
+                    .iter()
+                    .filter_map(|l| {
+                        let mut f = l.split_whitespace();
+                        let name = f.next().unwrap_or("");
+                        let status = f.next().unwrap_or("");
+                        (status != "Ready").then(|| format!("{name}={status}"))
+                    })
+                    .collect();
+                if not_ready.is_empty() {
+                    ctx.log(format!("all {} nodes Ready", lines.len()));
+                    ctx.progress(100);
+                    StepOutcome::Completed
+                } else {
+                    StepOutcome::Failed {
+                        error: format!("nodes still rolling out the pull secret: {}", not_ready.join(", ")),
+                        next_steps: vec![
+                            "The cluster is applying the updated global pull secret (MachineConfig rollout). Wait a few minutes, then Retry.".into(),
+                        ],
+                    }
+                }
+            }
+            Ok(o) => fail(&format!("could not get nodes (exit {}): {}", o.status, o.stderr.trim()), "Ensure `oc` has an active session, then retry."),
+            Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` is installed and on PATH, then retry."),
+        }
+    }
+}
+
 /// Install the Red Hat cert-manager Operator, a prerequisite for
 /// `apply-cluster-components`. Idempotent.
 struct InstallCertManager;
@@ -587,6 +641,7 @@ impl Module for SoftwareHubModule {
             Box::new(RestartContainer),
             Box::new(LoginToOcp),
             Box::new(AddEntitlement),
+            Box::new(WaitNodesReady),
             Box::new(InstallCertManager),
             Box::new(CreateNamespaces),
             Box::new(ApplyClusterComponents),
@@ -629,6 +684,7 @@ mod tests {
                 "restart-container",
                 "login-to-ocp",
                 "entitle-registry",
+                "wait-nodes-ready",
                 "install-cert-manager",
                 "create-namespaces",
                 "apply-cluster-components",
@@ -667,6 +723,29 @@ mod tests {
         let runner = MockCommandRunner::new(vec![MockResponse::ok("add-icr-cred-to-global-pull-secret", "updated")]);
         let ctx = ctx_with(runner, &[], &[("IBM_ENTITLEMENT_KEY", "k")]);
         assert_eq!(AddEntitlement.run(&ctx).await, StepOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn wait_nodes_ready_passes_when_all_ready() {
+        let runner = MockCommandRunner::new(vec![MockResponse::ok(
+            "get nodes",
+            "ip-1 Ready worker 20m v1.30\nip-2 Ready master 20m v1.30",
+        )]);
+        let ctx = ctx_with(runner, &[], &[]);
+        assert_eq!(WaitNodesReady.run(&ctx).await, StepOutcome::Completed);
+    }
+
+    #[tokio::test]
+    async fn wait_nodes_ready_fails_when_scheduling_disabled() {
+        let runner = MockCommandRunner::new(vec![MockResponse::ok(
+            "get nodes",
+            "ip-1 Ready worker 20m v1.30\nip-2 Ready,SchedulingDisabled master 20m v1.30",
+        )]);
+        let ctx = ctx_with(runner, &[], &[]);
+        match WaitNodesReady.run(&ctx).await {
+            StepOutcome::Failed { error, .. } => assert!(error.contains("ip-2")),
+            o => panic!("expected Failed, got {o:?}"),
+        }
     }
 
     #[tokio::test]
