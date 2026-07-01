@@ -77,6 +77,12 @@
       <div id="status-banner" class="banner" hidden></div>
     </section>
 
+    <section class="panel" id="input-panel" aria-labelledby="input-title" hidden>
+      <h2 id="input-title">Input needed</h2>
+      <p id="input-prompt" class="muted"></p>
+      <form id="input-form" class="input-form"></form>
+    </section>
+
     <section class="panel" id="provision-panel" aria-labelledby="provision-title">
       <h2 id="provision-title">Cluster spec</h2>
       <p class="muted">
@@ -161,10 +167,13 @@
       <ol id="steps" class="steps" aria-live="polite"></ol>
     </section>
 
-    <section class="panel" id="input-panel" aria-labelledby="input-title" hidden>
-      <h2 id="input-title">Input needed</h2>
-      <p id="input-prompt" class="muted"></p>
-      <form id="input-form" class="input-form"></form>
+    <section class="panel" id="access-panel" aria-labelledby="access-title" hidden>
+      <h2 id="access-title">Access your cluster</h2>
+      <p class="muted small" id="access-hint">URLs and credentials for the provisioned cluster and Software Hub.</p>
+      <dl id="access-list" class="access"></dl>
+      <div class="actions">
+        <button id="access-refresh-btn" class="ghost" type="button">Refresh</button>
+      </div>
     </section>
 
     <section class="panel" id="log-panel" aria-labelledby="log-title">

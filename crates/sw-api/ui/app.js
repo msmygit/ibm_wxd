@@ -48,6 +48,9 @@ let eventSource = null;
 // state exactly once per new prompt instead of on every SSE refresh (which
 // would fight the user's own scrolling). Reset when the input panel hides.
 let scrolledForPrompt = null;
+// The run id we last loaded the access panel for, so we fetch it once per run
+// (not on every SSE tick). Reset on view reset / manual refresh.
+let accessLoadedFor = null;
 
 // ---- theme ----------------------------------------------------------------
 function effectiveTheme() {
@@ -377,6 +380,20 @@ function renderRun(run) {
   );
   $("#destroy-btn").disabled = !provisionRan;
 
+  // Access panel: once a cluster exists (provisioning completed), surface the
+  // URLs + credentials. Load once per run; the Refresh button re-fetches (e.g.
+  // after services finish and the Software Hub console/admin creds exist).
+  const accessPanel = $("#access-panel");
+  if (provisionRan) {
+    accessPanel.hidden = false;
+    if (accessLoadedFor !== run.id) {
+      accessLoadedFor = run.id;
+      loadAccess(run.id);
+    }
+  } else {
+    accessPanel.hidden = true;
+  }
+
   // Input panel.
   const inputPanel = $("#input-panel");
   if (run.status === "awaiting_input" && run.pending_inputs && run.pending_inputs.length) {
@@ -423,6 +440,97 @@ function renderRun(run) {
   if (specStepNeedsEdit) setProvisionSpecReadonly(false);
   else if (active || run.status === "failed") setProvisionSpecReadonly(true);
   else setProvisionSpecReadonly(false);
+}
+
+// ---- access panel ---------------------------------------------------------
+async function loadAccess(runId) {
+  const list = $("#access-list");
+  clear(list);
+  list.appendChild(el("p", { class: "muted small", text: "Loading access details…" }));
+  try {
+    const info = await api(`/runs/${runId}/access`);
+    renderAccess(info);
+  } catch (e) {
+    clear(list);
+    list.appendChild(el("p", { class: "muted small", text: `Could not load access details: ${e.message}` }));
+  }
+}
+
+// A labelled row: URL (link), secret (masked with reveal + copy), or plain text
+// (copy). `kind` ∈ {"url","secret","text"}.
+function accessRow(label, value, kind) {
+  if (value == null || value === "") return null;
+  const dt = el("dt", { text: label });
+  let control;
+  if (kind === "url") {
+    control = el("a", { text: value, attrs: { href: value, target: "_blank", rel: "noopener noreferrer" } });
+  } else if (kind === "secret") {
+    const field = el("code", { class: "secret masked", text: value });
+    field.dataset.value = value;
+    field.dataset.shown = "0";
+    const reveal = el("button", { class: "ghost mini", text: "Reveal", attrs: { type: "button" } });
+    reveal.onclick = () => {
+      const shown = field.dataset.shown === "1";
+      field.dataset.shown = shown ? "0" : "1";
+      field.classList.toggle("masked", shown);
+      field.textContent = shown ? "•".repeat(Math.min(12, value.length)) : value;
+      reveal.textContent = shown ? "Reveal" : "Hide";
+    };
+    field.textContent = "•".repeat(Math.min(12, value.length));
+    control = el("span", { class: "access-secret" }, [field, reveal, copyButton(value)]);
+  } else {
+    control = el("span", { class: "access-text" }, [el("code", { text: value }), copyButton(value)]);
+  }
+  const dd = el("dd", {}, [control]);
+  const frag = document.createDocumentFragment();
+  frag.appendChild(dt);
+  frag.appendChild(dd);
+  return frag;
+}
+
+function copyButton(value) {
+  const btn = el("button", { class: "ghost mini", text: "Copy", attrs: { type: "button" } });
+  btn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      btn.textContent = "Copied";
+      setTimeout(() => (btn.textContent = "Copy"), 1200);
+    } catch {
+      btn.textContent = "—";
+    }
+  };
+  return btn;
+}
+
+function renderAccess(info) {
+  const list = $("#access-list");
+  clear(list);
+  const rows = [
+    ["Cluster", info.cluster_name, "text"],
+    ["Provider / region", [info.provider, info.region].filter(Boolean).join(" · ") || null, "text"],
+    ["OpenShift console", info.openshift_console_url, "url"],
+    ["OpenShift API", info.openshift_api_url, "text"],
+    ["OpenShift user", info.kubeadmin_user, "text"],
+    ["OpenShift password", info.kubeadmin_password, "secret"],
+    ["KUBECONFIG", info.kubeconfig_path, "text"],
+    ["Software Hub console", info.hub_console_url, "url"],
+    ["Software Hub user", info.hub_admin_user, "text"],
+    ["Software Hub password", info.hub_admin_password, "secret"],
+  ];
+  let any = false;
+  for (const [label, value, kind] of rows) {
+    const row = accessRow(label, value, kind);
+    if (row) {
+      list.appendChild(row);
+      any = true;
+    }
+  }
+  if (!any) {
+    list.appendChild(el("p", { class: "muted small", text: "No access details available yet — the cluster may still be building. Try Refresh." }));
+  }
+  if (info.notes && info.notes.length) {
+    for (const n of info.notes) list.appendChild(el("p", { class: "muted small access-note", text: `ℹ️ ${n}` }));
+  }
 }
 
 function renderInputForm(run) {
@@ -583,9 +691,17 @@ function resetRunView() {
   for (const id of ["#pause-btn", "#resume-btn", "#retry-btn", "#destroy-btn"]) {
     $(id).disabled = true;
   }
+  // Hide the access panel; it repopulates once the new run provisions a cluster.
+  $("#access-panel").hidden = true;
+  clear($("#access-list"));
+  accessLoadedFor = null;
   // Fresh start / re-attach reset: the cluster spec is editable again.
   setProvisionSpecReadonly(false);
 }
+
+$("#access-refresh-btn").addEventListener("click", () => {
+  if (currentRunId) loadAccess(currentRunId);
+});
 
 $("#start-btn").addEventListener("click", async () => {
   try {
