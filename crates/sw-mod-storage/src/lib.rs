@@ -129,7 +129,10 @@ fn parse_node_sg(json: &str) -> Option<String> {
             g.get("GroupName").and_then(|n| n.as_str()).is_some_and(|n| n.contains(needle))
         })
     };
-    let g = pick("node").or_else(|| pick("worker")).or_else(|| groups.first())?;
+    // Require an actual node/worker SG — never fall back to "first SG in the
+    // list", which silently picked a service-ELB SG (`k8s-elb-*`) when the
+    // filter returned the wrong set, leaving EFS mount targets unreachable.
+    let g = pick("node").or_else(|| pick("worker"))?;
     g.get("GroupId").and_then(|x| x.as_str()).map(String::from)
 }
 
@@ -249,13 +252,21 @@ impl Step for EnsureEfs {
             return fail("could not determine the cluster VPC", "Confirm the cluster VPC exists, then retry.");
         };
 
+        // The node SG is named `<infra>-node` in both classic (machine-api) and
+        // CAPI-based installs. Do NOT filter by the in-tree
+        // `kubernetes.io/cluster/<infra>=owned` tag: CAPI installs (OCP 4.19+)
+        // tag node SGs with `sigs.k8s.io/cluster-api-provider-aws/...` instead,
+        // and the in-tree tag lands on service-ELB SGs (`k8s-elb-*`) — so a tag
+        // filter can return the wrong SG and the EFS mount targets end up
+        // unreachable from the nodes. Select by the stable node SG name.
         let sg_out = ctx
             .run_with_env(
                 "aws",
                 &[
                     "ec2".into(), "describe-security-groups".into(),
-                    "--filters".into(), format!("Name=vpc-id,Values={vpc}"),
-                    format!("Name=tag:{},Values=owned", cluster_tag(&infra)),
+                    "--filters".into(),
+                    format!("Name=vpc-id,Values={vpc}"),
+                    format!("Name=group-name,Values={infra}-node"),
                     "--output".into(), "json".into(),
                 ],
                 &env,
@@ -358,13 +369,44 @@ impl Step for InstallEfsCsi {
             .run_in_cluster("oc", &["apply".into(), "-f".into(), manifest.to_string_lossy().into_owned()])
             .await
         {
-            Ok(o) if o.success() => {
-                ctx.progress(100);
-                StepOutcome::Completed
-            }
-            Ok(o) => fail(&format!("oc apply (EFS CSI operator) failed (exit {}): {}", o.status, o.stderr.trim()), "Confirm the redhat-operators catalog source is available, then retry."),
-            Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active cluster session, then retry."),
+            Ok(o) if o.success() => {}
+            Ok(o) => return fail(&format!("oc apply (EFS CSI operator) failed (exit {}): {}", o.status, o.stderr.trim()), "Confirm the redhat-operators catalog source is available, then retry."),
+            Err(e) => return fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active cluster session, then retry."),
         }
+
+        // Wait for OLM to install the operator. Without the OperatorGroup (now in
+        // the manifest) OLM silently never creates an InstallPlan, so the CSV
+        // never appears — verify it reaches Succeeded here rather than reporting
+        // success while nothing installed (the failure would otherwise only
+        // surface later, when an efs-sc PVC hangs Pending).
+        ctx.log("waiting for the AWS EFS CSI Driver Operator to install (CSV Succeeded)");
+        for attempt in 0..20 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            }
+            let csv = ctx
+                .run_in_cluster(
+                    "oc",
+                    &[
+                        "get".into(), "csv".into(),
+                        "-n".into(), "openshift-cluster-csi-drivers".into(),
+                        "-o".into(),
+                        "jsonpath={range .items[?(@.spec.displayName==\"AWS EFS CSI Driver Operator\")]}{.status.phase}{end}".into(),
+                    ],
+                )
+                .await;
+            if let Ok(o) = csv {
+                if o.success() && o.stdout.contains("Succeeded") {
+                    ctx.log("AWS EFS CSI Driver Operator installed (CSV Succeeded)");
+                    ctx.progress(100);
+                    return StepOutcome::Completed;
+                }
+            }
+        }
+        fail(
+            "the AWS EFS CSI Driver Operator did not reach Succeeded within 5 minutes",
+            "Check the Subscription/InstallPlan in openshift-cluster-csi-drivers (an OperatorGroup must exist and the redhat-operators catalog must be healthy), then retry.",
+        )
     }
 }
 
@@ -409,6 +451,13 @@ impl Step for EfsStorageClass {
 
 /// Static manifest for the AWS EFS CSI Driver Operator subscription + driver.
 const EFS_CSI_OPERATOR_YAML: &str = "\
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-cluster-csi-drivers
+  namespace: openshift-cluster-csi-drivers
+spec: {}
+---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
@@ -603,5 +652,24 @@ mod tests {
         assert!(y.contains("fileSystemId: fs-xyz"));
         assert!(y.contains("provisioner: efs.csi.aws.com"));
         assert!(y.contains("name: efs-sc"));
+    }
+
+    #[test]
+    fn csi_operator_manifest_includes_operator_group() {
+        // Without an OperatorGroup in openshift-cluster-csi-drivers, OLM never
+        // creates an InstallPlan and the operator silently never installs.
+        assert!(EFS_CSI_OPERATOR_YAML.contains("kind: OperatorGroup"));
+        assert!(EFS_CSI_OPERATOR_YAML.contains("kind: Subscription"));
+        assert!(EFS_CSI_OPERATOR_YAML.contains("kind: ClusterCSIDriver"));
+    }
+
+    #[test]
+    fn does_not_pick_a_non_node_security_group() {
+        // A tag filter can return only ELB/LB SGs; never fall back to picking an
+        // arbitrary (e.g. `k8s-elb-*`) SG — that leaves EFS unreachable.
+        let json = "{\"SecurityGroups\":[\
+            {\"GroupId\":\"sg-elb\",\"GroupName\":\"k8s-elb-abc\"},\
+            {\"GroupId\":\"sg-lb\",\"GroupName\":\"cl-lb\"}]}";
+        assert_eq!(parse_node_sg(json), None);
     }
 }
