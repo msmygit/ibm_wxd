@@ -54,7 +54,10 @@ impl Step for ProvideKubeconfig {
         }
 
         // Prefer a path on the local machine; fall back to pasted content.
-        if let Some(path) = ctx.input("kubeconfig_source_path").filter(|p| !p.is_empty()) {
+        if let Some(path) = ctx
+            .input("kubeconfig_source_path")
+            .filter(|p| !p.is_empty())
+        {
             let src = expand_home(path);
             match std::fs::read_to_string(&src) {
                 Ok(contents) => {
@@ -143,7 +146,9 @@ impl Step for ProvideKubeconfig {
                 Err(e) => {
                     return StepOutcome::Failed {
                         error: format!("could not run oc login: {e}"),
-                        next_steps: vec!["Ensure `oc` is installed (Prerequisites), then retry.".into()],
+                        next_steps: vec![
+                            "Ensure `oc` is installed (Prerequisites), then retry.".into()
+                        ],
                     };
                 }
             }
@@ -155,13 +160,48 @@ impl Step for ProvideKubeconfig {
                      token (or username/password), or point to a kubeconfig file."
                 .into(),
             fields: vec![
-                InputField { key: "OCP_URL".into(), label: "OpenShift API URL (https://api…:6443)".into(), secret: false, default: None },
-                InputField { key: "OCP_CONSOLE_URL".into(), label: "OpenShift console URL (optional)".into(), secret: false, default: None },
-                InputField { key: "OCP_TOKEN".into(), label: "API token".into(), secret: true, default: None },
-                InputField { key: "OCP_USERNAME".into(), label: "…or username".into(), secret: false, default: None },
-                InputField { key: "OCP_PASSWORD".into(), label: "…and password".into(), secret: true, default: None },
-                InputField { key: "kubeconfig_source_path".into(), label: "…or path to a kubeconfig file".into(), secret: false, default: None },
-                InputField { key: "kubeconfig".into(), label: "…or paste kubeconfig contents".into(), secret: true, default: None },
+                InputField {
+                    key: "OCP_URL".into(),
+                    label: "OpenShift API URL (https://api…:6443)".into(),
+                    secret: false,
+                    default: None,
+                },
+                InputField {
+                    key: "OCP_CONSOLE_URL".into(),
+                    label: "OpenShift console URL (optional)".into(),
+                    secret: false,
+                    default: None,
+                },
+                InputField {
+                    key: "OCP_TOKEN".into(),
+                    label: "API token".into(),
+                    secret: true,
+                    default: None,
+                },
+                InputField {
+                    key: "OCP_USERNAME".into(),
+                    label: "…or username".into(),
+                    secret: false,
+                    default: None,
+                },
+                InputField {
+                    key: "OCP_PASSWORD".into(),
+                    label: "…and password".into(),
+                    secret: true,
+                    default: None,
+                },
+                InputField {
+                    key: "kubeconfig_source_path".into(),
+                    label: "…or path to a kubeconfig file".into(),
+                    secret: false,
+                    default: None,
+                },
+                InputField {
+                    key: "kubeconfig".into(),
+                    label: "…or paste kubeconfig contents".into(),
+                    secret: true,
+                    default: None,
+                },
             ],
         }
     }
@@ -242,10 +282,14 @@ mod tests {
         secrets: &[(&str, &str)],
         artifacts: std::path::PathBuf,
     ) -> StepContext {
-        let inputs: BTreeMap<String, String> =
-            inputs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let secrets: BTreeMap<String, String> =
-            secrets.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let inputs: BTreeMap<String, String> = inputs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let secrets: BTreeMap<String, String> = secrets
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         std::fs::create_dir_all(&artifacts).unwrap();
         StepContext::with_artifacts(
             "run".into(),
@@ -260,7 +304,11 @@ mod tests {
 
     #[test]
     fn module_has_two_steps() {
-        let ids: Vec<_> = ExistingClusterModule.steps().iter().map(|s| s.id().to_string()).collect();
+        let ids: Vec<_> = ExistingClusterModule
+            .steps()
+            .iter()
+            .map(|s| s.id().to_string())
+            .collect();
         assert_eq!(ids, vec!["provide-kubeconfig", "verify-access"]);
     }
 

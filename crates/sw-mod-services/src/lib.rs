@@ -184,11 +184,15 @@ fn selected_components(ctx: &StepContext) -> String {
 }
 
 fn operands_ns(ctx: &StepContext) -> String {
-    ctx.input("PROJECT_CPD_INST_OPERANDS").unwrap_or("cpd-instance").to_string()
+    ctx.input("PROJECT_CPD_INST_OPERANDS")
+        .unwrap_or("cpd-instance")
+        .to_string()
 }
 
 fn operators_ns(ctx: &StepContext) -> String {
-    ctx.input("PROJECT_CPD_INST_OPERATORS").unwrap_or("cpd-operators").to_string()
+    ctx.input("PROJECT_CPD_INST_OPERATORS")
+        .unwrap_or("cpd-operators")
+        .to_string()
 }
 
 fn service_version(ctx: &StepContext) -> String {
@@ -213,8 +217,16 @@ fn services_cpd_env(ctx: &StepContext) -> Vec<(String, String)> {
     let mut env = vec![
         ("VERSION".to_string(), version),
         ("PATCH_ID".to_string(), service_patch_id(ctx)),
-        ("OPENSHIFT_TYPE".to_string(), ctx.input("OPENSHIFT_TYPE").unwrap_or("self-managed").to_string()),
-        ("IMAGE_ARCH".to_string(), ctx.input("IMAGE_ARCH").unwrap_or("amd64").to_string()),
+        (
+            "OPENSHIFT_TYPE".to_string(),
+            ctx.input("OPENSHIFT_TYPE")
+                .unwrap_or("self-managed")
+                .to_string(),
+        ),
+        (
+            "IMAGE_ARCH".to_string(),
+            ctx.input("IMAGE_ARCH").unwrap_or("amd64").to_string(),
+        ),
         ("OLM_UTILS_IMAGE".to_string(), olm_image),
     ];
     // cpd-cli manage reads DOCKER_HOST from its own Go docker client (not the
@@ -288,7 +300,9 @@ impl Step for ClusterResourcesStep {
         // argument is required" otherwise). The platform's equivalent step passes
         // it too.
         let op_ns = operators_ns(ctx);
-        ctx.log(format!("generating cluster-scoped resources (CRDs) for [{components}]"));
+        ctx.log(format!(
+            "generating cluster-scoped resources (CRDs) for [{components}]"
+        ));
         let dl = vec![
             "manage".into(),
             "case-download".into(),
@@ -302,14 +316,22 @@ impl Step for ClusterResourcesStep {
             Ok(o) if o.success() => {}
             Ok(o) => {
                 return StepOutcome::Failed {
-                    error: format!("case-download (cluster resources) failed (exit {}): {}", o.status, o.diagnostic()),
-                    next_steps: vec!["Confirm network access to the IBM CASE repository, then retry.".into()],
+                    error: format!(
+                        "case-download (cluster resources) failed (exit {}): {}",
+                        o.status,
+                        o.diagnostic()
+                    ),
+                    next_steps: vec![
+                        "Confirm network access to the IBM CASE repository, then retry.".into(),
+                    ],
                 }
             }
             Err(e) => {
                 return StepOutcome::Failed {
                     error: format!("could not run cpd-cli: {e}"),
-                    next_steps: vec!["Ensure cpd-cli is installed (Prerequisites), then retry.".into()],
+                    next_steps: vec![
+                        "Ensure cpd-cli is installed (Prerequisites), then retry.".into()
+                    ],
                 }
             }
         }
@@ -354,13 +376,21 @@ impl Step for ApplyComponentsStep {
         let patch_id = service_patch_id(ctx);
         // Software Hub services (watsonx.data et al.) need both a block (RWO) and
         // a file (RWX) storage class. Defaults match a provisioned AWS cluster.
-        let block_sc = ctx.input("block_storage_class").unwrap_or("gp3-csi").to_string();
-        let file_sc = ctx.input("file_storage_class").unwrap_or("efs-sc").to_string();
+        let block_sc = ctx
+            .input("block_storage_class")
+            .unwrap_or("gp3-csi")
+            .to_string();
+        let file_sc = ctx
+            .input("file_storage_class")
+            .unwrap_or("efs-sc")
+            .to_string();
         let cpd_env = services_cpd_env(ctx);
 
         // install-components installs from locally-downloaded CASE packages —
         // fetch them for the selected components first.
-        ctx.log(format!("downloading CASE packages for [{components}] (release {version})"));
+        ctx.log(format!(
+            "downloading CASE packages for [{components}] (release {version})"
+        ));
         let dl = vec![
             "manage".into(),
             "case-download".into(),
@@ -368,18 +398,29 @@ impl Step for ApplyComponentsStep {
             format!("--patch_id={patch_id}"),
             format!("--components={components}"),
         ];
-        match ctx.run_in_cluster_pty_env("cpd-cli", &dl, &cpd_env, &[]).await {
+        match ctx
+            .run_in_cluster_pty_env("cpd-cli", &dl, &cpd_env, &[])
+            .await
+        {
             Ok(o) if o.success() => {}
             Ok(o) => {
                 return StepOutcome::Failed {
-                    error: format!("case-download for services failed (exit {}): {}", o.status, o.diagnostic()),
-                    next_steps: vec!["Confirm network access to the IBM CASE repository, then retry.".into()],
+                    error: format!(
+                        "case-download for services failed (exit {}): {}",
+                        o.status,
+                        o.diagnostic()
+                    ),
+                    next_steps: vec![
+                        "Confirm network access to the IBM CASE repository, then retry.".into(),
+                    ],
                 }
             }
             Err(e) => {
                 return StepOutcome::Failed {
                     error: format!("could not run cpd-cli: {e}"),
-                    next_steps: vec!["Ensure cpd-cli is installed (Prerequisites), then retry.".into()],
+                    next_steps: vec![
+                        "Ensure cpd-cli is installed (Prerequisites), then retry.".into()
+                    ],
                 }
             }
         }
@@ -407,15 +448,23 @@ impl Step for ApplyComponentsStep {
             args.push(format!("--image_pull_prefix={prefix}"));
             args.push(format!("--image_pull_secret={secret}"));
         }
-        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env, &[]).await {
+        match ctx
+            .run_in_cluster_pty_env("cpd-cli", &args, &cpd_env, &[])
+            .await
+        {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
             Ok(o) => StepOutcome::Failed {
-                error: format!("install-components for services failed (exit {}): {}", o.status, o.diagnostic()),
+                error: format!(
+                    "install-components for services failed (exit {}): {}",
+                    o.status,
+                    o.diagnostic()
+                ),
                 next_steps: vec![
-                    "Confirm the entitlement key, storage classes, and component ids, then retry.".into(),
+                    "Confirm the entitlement key, storage classes, and component ids, then retry."
+                        .into(),
                     format!("Inspect operand status: oc get ZenService -n {inst_ns}"),
                 ],
             },
@@ -440,7 +489,10 @@ impl Step for VerifyComponentsStep {
         let ns = operands_ns(ctx);
         ctx.log("checking service readiness");
         match ctx
-            .run_in_cluster("oc", &["get".into(), "ZenService".into(), "-n".into(), ns.clone()])
+            .run_in_cluster(
+                "oc",
+                &["get".into(), "ZenService".into(), "-n".into(), ns.clone()],
+            )
             .await
         {
             Ok(o) if o.success() && o.stdout.contains("Completed") => {
@@ -549,8 +601,7 @@ mod tests {
                 StepOutcome::Completed
             }
         }
-        let module =
-            ServicesModule::new(vec![Arc::new(FakeInstaller::new()), Arc::new(Other)]);
+        let module = ServicesModule::new(vec![Arc::new(FakeInstaller::new()), Arc::new(Other)]);
         let ids: Vec<String> = module.steps().iter().map(|s| s.id().to_string()).collect();
         assert_eq!(
             ids,
@@ -615,8 +666,10 @@ mod tests {
     // ---- ComponentsModule (selection-driven) ------------------------------
 
     fn ctx_inputs(runner: Arc<dyn sw_core::CommandRunner>, inputs: &[(&str, &str)]) -> StepContext {
-        let inputs: BTreeMap<String, String> =
-            inputs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let inputs: BTreeMap<String, String> = inputs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         StepContext::with_artifacts(
             "run".into(),
             "mod-services/x".into(),
@@ -633,10 +686,19 @@ mod tests {
         // Cluster-scoped resources (CRDs for the service + its dependency CASEs)
         // must be applied before install-components, else bundled operators
         // CrashLoop on missing CRDs and install-components deadlocks.
-        let ids: Vec<_> = ComponentsModule.steps().iter().map(|s| s.id().to_string()).collect();
+        let ids: Vec<_> = ComponentsModule
+            .steps()
+            .iter()
+            .map(|s| s.id().to_string())
+            .collect();
         assert_eq!(
             ids,
-            vec!["select-services", "services-cluster-resources", "install-services", "verify-services"]
+            vec![
+                "select-services",
+                "services-cluster-resources",
+                "install-services",
+                "verify-services"
+            ]
         );
     }
 
@@ -653,7 +715,9 @@ mod tests {
         assert!(calls.iter().any(|c| c.contains("case-download")
             && c.contains("--cluster_resources=true")
             && c.contains("--operator_ns=cpd-operators")));
-        assert!(calls.iter().any(|c| c.contains("cluster_scoped_resources.yaml") && c.contains("--server-side")));
+        assert!(calls
+            .iter()
+            .any(|c| c.contains("cluster_scoped_resources.yaml") && c.contains("--server-side")));
     }
 
     #[tokio::test]
@@ -665,7 +729,11 @@ mod tests {
         ]));
         let ctx = ctx_inputs(runner.clone(), &[("components", "watsonx_data,watsonx_ai")]);
         assert_eq!(ApplyComponentsStep.run(&ctx).await, StepOutcome::Completed);
-        assert!(runner.calls().iter().any(|c| c.contains("install-components") && c.contains("--components=watsonx_data,watsonx_ai")));
+        assert!(runner
+            .calls()
+            .iter()
+            .any(|c| c.contains("install-components")
+                && c.contains("--components=watsonx_data,watsonx_ai")));
 
         // default when absent
         let runner2 = Arc::new(MockCommandRunner::new(vec![
@@ -674,7 +742,10 @@ mod tests {
         ]));
         let ctx2 = ctx_inputs(runner2.clone(), &[]);
         assert_eq!(ApplyComponentsStep.run(&ctx2).await, StepOutcome::Completed);
-        assert!(runner2.calls().iter().any(|c| c.contains("install-components") && c.contains("--components=watsonx_data")));
+        assert!(runner2
+            .calls()
+            .iter()
+            .any(|c| c.contains("install-components") && c.contains("--components=watsonx_data")));
     }
 
     #[tokio::test]
@@ -692,7 +763,10 @@ mod tests {
 
     #[tokio::test]
     async fn verify_completes_when_zenservice_completed() {
-        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::ok("ZenService", "lite-cr Completed")]));
+        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::ok(
+            "ZenService",
+            "lite-cr Completed",
+        )]));
         let ctx = ctx_inputs(runner, &[]);
         assert_eq!(VerifyComponentsStep.run(&ctx).await, StepOutcome::Completed);
     }

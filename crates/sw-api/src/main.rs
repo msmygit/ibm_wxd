@@ -38,7 +38,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Open this URL in your browser (the token authenticates the UI):\n");
         println!("    http://127.0.0.1:{}/?token={}\n", bound.port(), token);
     }
-    println!("  API docs:  http://127.0.0.1:{}/api/openapi.yaml", bound.port());
+    println!(
+        "  API docs:  http://127.0.0.1:{}/api/openapi.yaml",
+        bound.port()
+    );
     println!("  Press Ctrl-C to stop.\n");
 
     axum::serve(listener, app).await?;

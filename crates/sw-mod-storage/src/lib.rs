@@ -30,7 +30,11 @@ fn applies(ctx: &StepContext) -> bool {
 /// (entered in the UI) and the `region` input. Empty when relying on `~/.aws`.
 fn aws_env(ctx: &StepContext) -> Vec<(String, String)> {
     let mut env = Vec::new();
-    for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"] {
+    for key in [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ] {
         if let Some(v) = ctx.secret(key).filter(|v| !v.is_empty()) {
             env.push((key.to_string(), v.to_string()));
         }
@@ -62,7 +66,10 @@ fn fs_id_path(ctx: &StepContext) -> std::path::PathBuf {
 }
 
 fn read_fs_id(ctx: &StepContext) -> Option<String> {
-    std::fs::read_to_string(fs_id_path(ctx)).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(fs_id_path(ctx))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 // ---- AWS JSON parsing (pure; unit-tested) ---------------------------------
@@ -93,7 +100,10 @@ fn parse_private_subnets(json: &str) -> (Option<String>, Vec<String>) {
     let mut subnets = Vec::new();
     if let Some(arr) = v.get("Subnets").and_then(|s| s.as_array()) {
         for s in arr {
-            let public = s.get("MapPublicIpOnLaunch").and_then(|b| b.as_bool()).unwrap_or(false);
+            let public = s
+                .get("MapPublicIpOnLaunch")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
             // Some installs also tag subnet roles; prefer the public-IP signal,
             // but treat an explicit `*private*` Name tag as private too.
             let name_private = s
@@ -102,7 +112,9 @@ fn parse_private_subnets(json: &str) -> (Option<String>, Vec<String>) {
                 .map(|tags| {
                     tags.iter().any(|t| {
                         t.get("Key").and_then(|k| k.as_str()) == Some("Name")
-                            && t.get("Value").and_then(|x| x.as_str()).is_some_and(|n| n.contains("private"))
+                            && t.get("Value")
+                                .and_then(|x| x.as_str())
+                                .is_some_and(|n| n.contains("private"))
                     })
                 })
                 .unwrap_or(false);
@@ -126,7 +138,9 @@ fn parse_node_sg(json: &str) -> Option<String> {
     let groups = v.get("SecurityGroups").and_then(|g| g.as_array())?;
     let pick = |needle: &str| {
         groups.iter().find(|g| {
-            g.get("GroupName").and_then(|n| n.as_str()).is_some_and(|n| n.contains(needle))
+            g.get("GroupName")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| n.contains(needle))
         })
     };
     // Require an actual node/worker SG — never fall back to "first SG in the
@@ -171,8 +185,11 @@ impl Step for EnsureEfs {
         }
         let Some(infra) = infra_id(ctx) else {
             return StepOutcome::Failed {
-                error: "could not read cluster infra ID (metadata.json) for EFS provisioning".into(),
-                next_steps: vec!["Ensure the cluster was provisioned in this run, then retry.".into()],
+                error: "could not read cluster infra ID (metadata.json) for EFS provisioning"
+                    .into(),
+                next_steps: vec![
+                    "Ensure the cluster was provisioned in this run, then retry.".into(),
+                ],
             };
         };
         let env = aws_env(ctx);
@@ -188,11 +205,21 @@ impl Step for EnsureEfs {
                 let existing = ctx
                     .run_with_env(
                         "aws",
-                        &["efs".into(), "describe-file-systems".into(), "--creation-token".into(), token.clone(), "--output".into(), "json".into()],
+                        &[
+                            "efs".into(),
+                            "describe-file-systems".into(),
+                            "--creation-token".into(),
+                            token.clone(),
+                            "--output".into(),
+                            "json".into(),
+                        ],
                         &env,
                     )
                     .await;
-                let found = existing.ok().filter(|o| o.success()).and_then(|o| parse_fs_id(&o.stdout));
+                let found = existing
+                    .ok()
+                    .filter(|o| o.success())
+                    .and_then(|o| parse_fs_id(&o.stdout));
                 let id = match found {
                     Some(id) => id,
                     None => {
@@ -201,14 +228,18 @@ impl Step for EnsureEfs {
                             .run_with_env(
                                 "aws",
                                 &[
-                                    "efs".into(), "create-file-system".into(),
-                                    "--creation-token".into(), token.clone(),
+                                    "efs".into(),
+                                    "create-file-system".into(),
+                                    "--creation-token".into(),
+                                    token.clone(),
                                     "--encrypted".into(),
-                                    "--performance-mode".into(), "generalPurpose".into(),
+                                    "--performance-mode".into(),
+                                    "generalPurpose".into(),
                                     "--tags".into(),
                                     format!("Key=Name,Value={token}"),
                                     format!("Key={},Value=owned", cluster_tag(&infra)),
-                                    "--output".into(), "json".into(),
+                                    "--output".into(),
+                                    "json".into(),
                                 ],
                                 &env,
                             )
@@ -233,23 +264,46 @@ impl Step for EnsureEfs {
             .run_with_env(
                 "aws",
                 &[
-                    "ec2".into(), "describe-subnets".into(),
-                    "--filters".into(), format!("Name=tag:{},Values=owned", cluster_tag(&infra)),
-                    "--output".into(), "json".into(),
+                    "ec2".into(),
+                    "describe-subnets".into(),
+                    "--filters".into(),
+                    format!("Name=tag:{},Values=owned", cluster_tag(&infra)),
+                    "--output".into(),
+                    "json".into(),
                 ],
                 &env,
             )
             .await;
         let (vpc, subnets) = match subnets_out {
             Ok(o) if o.success() => parse_private_subnets(&o.stdout),
-            Ok(o) => return fail(&format!("describe-subnets failed (exit {}): {}", o.status, o.stderr.trim()), "Check EC2 read permissions, then retry."),
-            Err(e) => return fail(&format!("could not run aws ec2 describe-subnets: {e}"), "Ensure the aws CLI is installed, then retry."),
+            Ok(o) => {
+                return fail(
+                    &format!(
+                        "describe-subnets failed (exit {}): {}",
+                        o.status,
+                        o.stderr.trim()
+                    ),
+                    "Check EC2 read permissions, then retry.",
+                )
+            }
+            Err(e) => {
+                return fail(
+                    &format!("could not run aws ec2 describe-subnets: {e}"),
+                    "Ensure the aws CLI is installed, then retry.",
+                )
+            }
         };
         if subnets.is_empty() {
-            return fail("found no private subnets tagged for this cluster", "Confirm the cluster provisioned its VPC/subnets, then retry.");
+            return fail(
+                "found no private subnets tagged for this cluster",
+                "Confirm the cluster provisioned its VPC/subnets, then retry.",
+            );
         }
         let Some(vpc) = vpc else {
-            return fail("could not determine the cluster VPC", "Confirm the cluster VPC exists, then retry.");
+            return fail(
+                "could not determine the cluster VPC",
+                "Confirm the cluster VPC exists, then retry.",
+            );
         };
 
         // The node SG is named `<infra>-node` in both classic (machine-api) and
@@ -263,22 +317,41 @@ impl Step for EnsureEfs {
             .run_with_env(
                 "aws",
                 &[
-                    "ec2".into(), "describe-security-groups".into(),
+                    "ec2".into(),
+                    "describe-security-groups".into(),
                     "--filters".into(),
                     format!("Name=vpc-id,Values={vpc}"),
                     format!("Name=group-name,Values={infra}-node"),
-                    "--output".into(), "json".into(),
+                    "--output".into(),
+                    "json".into(),
                 ],
                 &env,
             )
             .await;
         let sg = match sg_out {
             Ok(o) if o.success() => parse_node_sg(&o.stdout),
-            Ok(o) => return fail(&format!("describe-security-groups failed (exit {}): {}", o.status, o.stderr.trim()), "Check EC2 read permissions, then retry."),
-            Err(e) => return fail(&format!("could not run aws ec2 describe-security-groups: {e}"), "Ensure the aws CLI is installed, then retry."),
+            Ok(o) => {
+                return fail(
+                    &format!(
+                        "describe-security-groups failed (exit {}): {}",
+                        o.status,
+                        o.stderr.trim()
+                    ),
+                    "Check EC2 read permissions, then retry.",
+                )
+            }
+            Err(e) => {
+                return fail(
+                    &format!("could not run aws ec2 describe-security-groups: {e}"),
+                    "Ensure the aws CLI is installed, then retry.",
+                )
+            }
         };
         let Some(sg) = sg else {
-            return fail("could not find the cluster node security group", "Confirm the cluster security groups exist, then retry.");
+            return fail(
+                "could not find the cluster node security group",
+                "Confirm the cluster security groups exist, then retry.",
+            );
         };
 
         // 3. Allow NFS (2049) within the node SG (idempotent — ignore duplicates).
@@ -286,12 +359,18 @@ impl Step for EnsureEfs {
             .run_with_env(
                 "aws",
                 &[
-                    "ec2".into(), "authorize-security-group-ingress".into(),
-                    "--group-id".into(), sg.clone(),
-                    "--protocol".into(), "tcp".into(),
-                    "--port".into(), "2049".into(),
-                    "--source-group".into(), sg.clone(),
-                    "--output".into(), "json".into(),
+                    "ec2".into(),
+                    "authorize-security-group-ingress".into(),
+                    "--group-id".into(),
+                    sg.clone(),
+                    "--protocol".into(),
+                    "tcp".into(),
+                    "--port".into(),
+                    "2049".into(),
+                    "--source-group".into(),
+                    sg.clone(),
+                    "--output".into(),
+                    "json".into(),
                 ],
                 &env,
             )
@@ -301,11 +380,22 @@ impl Step for EnsureEfs {
         let existing_mt = ctx
             .run_with_env(
                 "aws",
-                &["efs".into(), "describe-mount-targets".into(), "--file-system-id".into(), fs_id.clone(), "--output".into(), "json".into()],
+                &[
+                    "efs".into(),
+                    "describe-mount-targets".into(),
+                    "--file-system-id".into(),
+                    fs_id.clone(),
+                    "--output".into(),
+                    "json".into(),
+                ],
                 &env,
             )
             .await;
-        let covered = existing_mt.ok().filter(|o| o.success()).map(|o| parse_mount_target_subnets(&o.stdout)).unwrap_or_default();
+        let covered = existing_mt
+            .ok()
+            .filter(|o| o.success())
+            .map(|o| parse_mount_target_subnets(&o.stdout))
+            .unwrap_or_default();
         for subnet in &subnets {
             if covered.contains(subnet) {
                 continue;
@@ -316,18 +406,26 @@ impl Step for EnsureEfs {
                 .run_with_env(
                     "aws",
                     &[
-                        "efs".into(), "create-mount-target".into(),
-                        "--file-system-id".into(), fs_id.clone(),
-                        "--subnet-id".into(), subnet.clone(),
-                        "--security-groups".into(), sg.clone(),
-                        "--output".into(), "json".into(),
+                        "efs".into(),
+                        "create-mount-target".into(),
+                        "--file-system-id".into(),
+                        fs_id.clone(),
+                        "--subnet-id".into(),
+                        subnet.clone(),
+                        "--security-groups".into(),
+                        sg.clone(),
+                        "--output".into(),
+                        "json".into(),
                     ],
                     &env,
                 )
                 .await;
         }
 
-        ctx.log(format!("EFS {fs_id} ready with {} mount target(s)", subnets.len()));
+        ctx.log(format!(
+            "EFS {fs_id} ready with {} mount target(s)",
+            subnets.len()
+        ));
         ctx.progress(100);
         StepOutcome::Completed
     }
@@ -351,7 +449,14 @@ impl Step for InstallEfsCsi {
         }
         // Idempotency: ClusterCSIDriver already present?
         if let Ok(o) = ctx
-            .run_in_cluster("oc", &["get".into(), "clustercsidriver".into(), "efs.csi.aws.com".into()])
+            .run_in_cluster(
+                "oc",
+                &[
+                    "get".into(),
+                    "clustercsidriver".into(),
+                    "efs.csi.aws.com".into(),
+                ],
+            )
             .await
         {
             if o.success() {
@@ -362,16 +467,40 @@ impl Step for InstallEfsCsi {
         }
         let manifest = ctx.artifacts_dir().join("efs-csi-operator.yaml");
         if let Err(e) = std::fs::write(&manifest, EFS_CSI_OPERATOR_YAML) {
-            return fail(&format!("could not write CSI operator manifest: {e}"), "Check filesystem permissions for the artifacts dir, then retry.");
+            return fail(
+                &format!("could not write CSI operator manifest: {e}"),
+                "Check filesystem permissions for the artifacts dir, then retry.",
+            );
         }
         ctx.log("installing the AWS EFS CSI Driver Operator");
         match ctx
-            .run_in_cluster("oc", &["apply".into(), "-f".into(), manifest.to_string_lossy().into_owned()])
+            .run_in_cluster(
+                "oc",
+                &[
+                    "apply".into(),
+                    "-f".into(),
+                    manifest.to_string_lossy().into_owned(),
+                ],
+            )
             .await
         {
             Ok(o) if o.success() => {}
-            Ok(o) => return fail(&format!("oc apply (EFS CSI operator) failed (exit {}): {}", o.status, o.stderr.trim()), "Confirm the redhat-operators catalog source is available, then retry."),
-            Err(e) => return fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active cluster session, then retry."),
+            Ok(o) => {
+                return fail(
+                    &format!(
+                        "oc apply (EFS CSI operator) failed (exit {}): {}",
+                        o.status,
+                        o.stderr.trim()
+                    ),
+                    "Confirm the redhat-operators catalog source is available, then retry.",
+                )
+            }
+            Err(e) => {
+                return fail(
+                    &format!("could not run oc: {e}"),
+                    "Ensure `oc` has an active cluster session, then retry.",
+                )
+            }
         }
 
         // Wait for OLM to install the operator. Without the OperatorGroup (now in
@@ -427,15 +556,30 @@ impl Step for EfsStorageClass {
             return StepOutcome::Completed;
         }
         let Some(fs_id) = read_fs_id(ctx) else {
-            return fail("EFS filesystem id not found; run the ensure-efs step first", "Retry the ensure-efs step, then this one.");
+            return fail(
+                "EFS filesystem id not found; run the ensure-efs step first",
+                "Retry the ensure-efs step, then this one.",
+            );
         };
         let manifest = ctx.artifacts_dir().join("efs-sc.yaml");
         if let Err(e) = std::fs::write(&manifest, efs_storage_class_yaml(&fs_id)) {
-            return fail(&format!("could not write storage-class manifest: {e}"), "Check filesystem permissions for the artifacts dir, then retry.");
+            return fail(
+                &format!("could not write storage-class manifest: {e}"),
+                "Check filesystem permissions for the artifacts dir, then retry.",
+            );
         }
-        ctx.log(format!("creating StorageClass efs-sc (fileSystemId={fs_id})"));
+        ctx.log(format!(
+            "creating StorageClass efs-sc (fileSystemId={fs_id})"
+        ));
         match ctx
-            .run_in_cluster("oc", &["apply".into(), "-f".into(), manifest.to_string_lossy().into_owned()])
+            .run_in_cluster(
+                "oc",
+                &[
+                    "apply".into(),
+                    "-f".into(),
+                    manifest.to_string_lossy().into_owned(),
+                ],
+            )
             .await
         {
             Ok(o) if o.success() => {
@@ -443,8 +587,18 @@ impl Step for EfsStorageClass {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
-            Ok(o) => fail(&format!("oc apply (efs-sc) failed (exit {}): {}", o.status, o.stderr.trim()), "Confirm the EFS CSI driver is installed, then retry."),
-            Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active cluster session, then retry."),
+            Ok(o) => fail(
+                &format!(
+                    "oc apply (efs-sc) failed (exit {}): {}",
+                    o.status,
+                    o.stderr.trim()
+                ),
+                "Confirm the EFS CSI driver is installed, then retry.",
+            ),
+            Err(e) => fail(
+                &format!("could not run oc: {e}"),
+                "Ensure `oc` has an active cluster session, then retry.",
+            ),
         }
     }
 }
@@ -519,7 +673,11 @@ impl Module for StorageModule {
         "Provision cluster storage (RWX)"
     }
     fn steps(&self) -> Vec<Box<dyn Step>> {
-        vec![Box::new(EnsureEfs), Box::new(InstallEfsCsi), Box::new(EfsStorageClass)]
+        vec![
+            Box::new(EnsureEfs),
+            Box::new(InstallEfsCsi),
+            Box::new(EfsStorageClass),
+        ]
     }
 }
 
@@ -530,9 +688,15 @@ mod tests {
     use std::sync::Arc;
     use sw_core::{EventBus, MockCommandRunner, MockResponse};
 
-    fn ctx_with(runner: MockCommandRunner, inputs: &[(&str, &str)], dir: std::path::PathBuf) -> StepContext {
-        let inputs: BTreeMap<String, String> =
-            inputs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    fn ctx_with(
+        runner: MockCommandRunner,
+        inputs: &[(&str, &str)],
+        dir: std::path::PathBuf,
+    ) -> StepContext {
+        let inputs: BTreeMap<String, String> = inputs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         StepContext::with_artifacts(
             "run".into(),
             "mod-storage/x".into(),
@@ -553,19 +717,36 @@ mod tests {
     fn write_metadata(dir: &std::path::Path, infra: &str) {
         let cluster = dir.join("cluster");
         std::fs::create_dir_all(&cluster).unwrap();
-        std::fs::write(cluster.join("metadata.json"), format!("{{\"infraID\":\"{infra}\"}}")).unwrap();
+        std::fs::write(
+            cluster.join("metadata.json"),
+            format!("{{\"infraID\":\"{infra}\"}}"),
+        )
+        .unwrap();
     }
 
     #[test]
     fn module_exposes_three_steps_in_order() {
-        let ids: Vec<_> = StorageModule.steps().iter().map(|s| s.id().to_string()).collect();
-        assert_eq!(ids, vec!["ensure-efs", "install-efs-csi", "efs-storage-class"]);
+        let ids: Vec<_> = StorageModule
+            .steps()
+            .iter()
+            .map(|s| s.id().to_string())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["ensure-efs", "install-efs-csi", "efs-storage-class"]
+        );
     }
 
     #[test]
     fn parses_fs_id_from_list_and_object() {
-        assert_eq!(parse_fs_id("{\"FileSystemId\":\"fs-1\"}").as_deref(), Some("fs-1"));
-        assert_eq!(parse_fs_id("{\"FileSystems\":[{\"FileSystemId\":\"fs-2\"}]}").as_deref(), Some("fs-2"));
+        assert_eq!(
+            parse_fs_id("{\"FileSystemId\":\"fs-1\"}").as_deref(),
+            Some("fs-1")
+        );
+        assert_eq!(
+            parse_fs_id("{\"FileSystems\":[{\"FileSystemId\":\"fs-2\"}]}").as_deref(),
+            Some("fs-2")
+        );
         assert_eq!(parse_fs_id("{\"FileSystems\":[]}"), None);
     }
 
@@ -590,20 +771,31 @@ mod tests {
     #[test]
     fn parses_covered_mount_target_subnets() {
         let json = "{\"MountTargets\":[{\"SubnetId\":\"subnet-a\"},{\"SubnetId\":\"subnet-b\"}]}";
-        assert_eq!(parse_mount_target_subnets(json), vec!["subnet-a", "subnet-b"]);
+        assert_eq!(
+            parse_mount_target_subnets(json),
+            vec!["subnet-a", "subnet-b"]
+        );
     }
 
     #[tokio::test]
     async fn ensure_efs_skips_for_non_aws() {
         let dir = tmp("skip");
-        let ctx = ctx_with(MockCommandRunner::new(vec![]), &[("hyperscaler", "gcp")], dir);
+        let ctx = ctx_with(
+            MockCommandRunner::new(vec![]),
+            &[("hyperscaler", "gcp")],
+            dir,
+        );
         assert_eq!(EnsureEfs.run(&ctx).await, StepOutcome::Completed);
     }
 
     #[tokio::test]
     async fn ensure_efs_fails_without_metadata() {
         let dir = tmp("nometa");
-        let ctx = ctx_with(MockCommandRunner::new(vec![]), &[("hyperscaler", "aws")], dir);
+        let ctx = ctx_with(
+            MockCommandRunner::new(vec![]),
+            &[("hyperscaler", "aws")],
+            dir,
+        );
         match EnsureEfs.run(&ctx).await {
             StepOutcome::Failed { .. } => {}
             o => panic!("expected Failed, got {o:?}"),
@@ -630,7 +822,11 @@ mod tests {
             // create-mount-target
             MockResponse::ok("efs create-mount-target", "{}"),
         ]);
-        let ctx = ctx_with(runner, &[("hyperscaler", "aws"), ("region", "us-east-2")], dir.clone());
+        let ctx = ctx_with(
+            runner,
+            &[("hyperscaler", "aws"), ("region", "us-east-2")],
+            dir.clone(),
+        );
         assert_eq!(EnsureEfs.run(&ctx).await, StepOutcome::Completed);
         // The chosen filesystem id is persisted for later steps.
         assert_eq!(read_fs_id(&ctx).as_deref(), Some("fs-new"));
@@ -639,7 +835,11 @@ mod tests {
     #[tokio::test]
     async fn storage_class_needs_fs_id() {
         let dir = tmp("sc-nofs");
-        let ctx = ctx_with(MockCommandRunner::new(vec![]), &[("hyperscaler", "aws")], dir);
+        let ctx = ctx_with(
+            MockCommandRunner::new(vec![]),
+            &[("hyperscaler", "aws")],
+            dir,
+        );
         match EfsStorageClass.run(&ctx).await {
             StepOutcome::Failed { .. } => {}
             o => panic!("expected Failed, got {o:?}"),

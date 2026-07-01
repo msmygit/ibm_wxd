@@ -62,9 +62,18 @@ impl Module for PreflightModule {
 
     fn steps(&self) -> Vec<Box<dyn Step>> {
         vec![
-            Box::new(ToolCheck { tool: "oc", probe: "version" }),
-            Box::new(ToolCheck { tool: "helm", probe: "version" }),
-            Box::new(ToolCheck { tool: "aws", probe: "--version" }),
+            Box::new(ToolCheck {
+                tool: "oc",
+                probe: "version",
+            }),
+            Box::new(ToolCheck {
+                tool: "helm",
+                probe: "version",
+            }),
+            Box::new(ToolCheck {
+                tool: "aws",
+                probe: "--version",
+            }),
         ]
     }
 }
@@ -77,7 +86,10 @@ mod tests {
 
     #[tokio::test]
     async fn tool_present_completes() {
-        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::ok("oc version", "ok")]));
+        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::ok(
+            "oc version",
+            "ok",
+        )]));
         let ctx = StepContext::new(
             "r".into(),
             "preflight/oc".into(),
@@ -86,7 +98,10 @@ mod tests {
             Default::default(),
             Default::default(),
         );
-        let step = ToolCheck { tool: "oc", probe: "version" };
+        let step = ToolCheck {
+            tool: "oc",
+            probe: "version",
+        };
         assert_eq!(step.run(&ctx).await, StepOutcome::Completed);
     }
 
@@ -105,7 +120,10 @@ mod tests {
             Default::default(),
             Default::default(),
         );
-        let step = ToolCheck { tool: "helm", probe: "version" };
+        let step = ToolCheck {
+            tool: "helm",
+            probe: "version",
+        };
         match step.run(&ctx).await {
             StepOutcome::Failed { next_steps, .. } => assert!(!next_steps.is_empty()),
             other => panic!("expected Failed, got {other:?}"),

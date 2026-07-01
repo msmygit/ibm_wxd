@@ -213,7 +213,10 @@ mod tests {
         for d in DERIVED {
             assert!(help.contains(d.name), "help missing derived {}", d.name);
         }
-        assert!(help.contains("5.4"), "help should reference the 5.4.x target");
+        assert!(
+            help.contains("5.4"),
+            "help should reference the 5.4.x target"
+        );
     }
 
     #[test]

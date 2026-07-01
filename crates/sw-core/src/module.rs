@@ -36,7 +36,15 @@ impl StepContext {
         inputs: BTreeMap<String, String>,
         secrets: BTreeMap<String, String>,
     ) -> Self {
-        Self::with_artifacts(run_id, step_id, runner, bus, inputs, secrets, PathBuf::new())
+        Self::with_artifacts(
+            run_id,
+            step_id,
+            runner,
+            bus,
+            inputs,
+            secrets,
+            PathBuf::new(),
+        )
     }
 
     /// Full constructor including the run's artifacts directory (kubeconfig,
@@ -174,7 +182,8 @@ impl StepContext {
         args: &[String],
         extra_mask: &[String],
     ) -> std::io::Result<CommandOutput> {
-        self.run_in_cluster_pty_env(program, args, &[], extra_mask).await
+        self.run_in_cluster_pty_env(program, args, &[], extra_mask)
+            .await
     }
 
     /// Like [`run_in_cluster_pty_masking`](Self::run_in_cluster_pty_masking) but
@@ -199,7 +208,9 @@ impl StepContext {
         let mut env = vec![("KUBECONFIG".to_string(), kc)];
         env.extend(extra_env.iter().cloned());
         let (wrapped_program, wrapped_args) = pty_wrap(program, args);
-        self.runner.run_with_env(&wrapped_program, &wrapped_args, &env).await
+        self.runner
+            .run_with_env(&wrapped_program, &wrapped_args, &env)
+            .await
     }
 
     /// A non-secret input value collected earlier in the run.
@@ -243,7 +254,11 @@ impl StepContext {
 fn pty_wrap(program: &str, args: &[String]) -> (String, Vec<String>) {
     match std::env::consts::OS {
         "macos" => {
-            let mut a = vec!["-q".to_string(), "/dev/null".to_string(), program.to_string()];
+            let mut a = vec![
+                "-q".to_string(),
+                "/dev/null".to_string(),
+                program.to_string(),
+            ];
             a.extend(args.iter().cloned());
             ("script".to_string(), a)
         }
@@ -253,7 +268,10 @@ fn pty_wrap(program: &str, args: &[String]) -> (String, Vec<String>) {
                 .map(|s| shell_quote(&s))
                 .collect::<Vec<_>>()
                 .join(" ");
-            ("script".to_string(), vec!["-qec".to_string(), cmd, "/dev/null".to_string()])
+            (
+                "script".to_string(),
+                vec!["-qec".to_string(), cmd, "/dev/null".to_string()],
+            )
         }
     }
 }
@@ -294,7 +312,9 @@ pub trait Module: Send + Sync {
 /// Desktop). Returns `None` if nothing is found — cpd-cli then surfaces its own
 /// error rather than us guessing wrong.
 pub fn detect_docker_host() -> Option<String> {
-    let existing = std::env::var("DOCKER_HOST").ok().filter(|s| !s.trim().is_empty());
+    let existing = std::env::var("DOCKER_HOST")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let home = std::env::var("HOME").unwrap_or_default();
     let candidates = [
         format!("{home}/.docker/run/docker.sock"), // Docker Desktop for Mac
@@ -372,7 +392,10 @@ mod tests {
             BTreeMap::new(),
             PathBuf::from("/tmp/run-artifacts"),
         );
-        assert_eq!(ctx.kubeconfig_path(), PathBuf::from("/tmp/run-artifacts/kubeconfig"));
+        assert_eq!(
+            ctx.kubeconfig_path(),
+            PathBuf::from("/tmp/run-artifacts/kubeconfig")
+        );
     }
 
     /// A runner that records the env it was handed, to prove run_in_cluster
@@ -383,8 +406,16 @@ mod tests {
     }
     #[async_trait]
     impl CommandRunner for EnvSpy {
-        async fn run(&self, _p: &str, _a: &[String]) -> std::io::Result<crate::command::CommandOutput> {
-            Ok(crate::command::CommandOutput { status: 0, stdout: String::new(), stderr: String::new() })
+        async fn run(
+            &self,
+            _p: &str,
+            _a: &[String],
+        ) -> std::io::Result<crate::command::CommandOutput> {
+            Ok(crate::command::CommandOutput {
+                status: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            })
         }
         async fn run_with_env(
             &self,
@@ -412,7 +443,9 @@ mod tests {
             BTreeMap::new(),
         )
         .with_persistence(store.clone());
-        ctx.run("aws", &["route53".into(), "list-hosted-zones".into()]).await.unwrap();
+        ctx.run("aws", &["route53".into(), "list-hosted-zones".into()])
+            .await
+            .unwrap();
         ctx.log("done");
 
         let events = store.replay_events("run-persist").unwrap();
@@ -423,7 +456,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(lines.iter().any(|l| l == "$ aws route53 list-hosted-zones"), "got {lines:?}");
+        assert!(
+            lines.iter().any(|l| l == "$ aws route53 list-hosted-zones"),
+            "got {lines:?}"
+        );
         assert!(lines.iter().any(|l| l == "done"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -444,7 +480,10 @@ mod tests {
         let bus = EventBus::new();
         let mut rx = bus.subscribe();
         let mut secrets = BTreeMap::new();
-        secrets.insert("OCP_TOKEN".to_string(), "sha256~supersecrettoken".to_string());
+        secrets.insert(
+            "OCP_TOKEN".to_string(),
+            "sha256~supersecrettoken".to_string(),
+        );
         let ctx = StepContext::new(
             "r".into(),
             "m/login".into(),
@@ -453,9 +492,12 @@ mod tests {
             BTreeMap::new(),
             secrets,
         );
-        ctx.run("oc", &["login".into(), "--token=sha256~supersecrettoken".into()])
-            .await
-            .unwrap();
+        ctx.run(
+            "oc",
+            &["login".into(), "--token=sha256~supersecrettoken".into()],
+        )
+        .await
+        .unwrap();
         // First event is the echoed command line, with the secret masked.
         match rx.recv().await.unwrap() {
             Event::Log { line, .. } => {
@@ -503,6 +545,12 @@ mod tests {
         );
         ctx.run_in_cluster("oc", &["whoami".into()]).await.unwrap();
         let env = spy.last_env.lock().unwrap().clone();
-        assert_eq!(env, vec![("KUBECONFIG".to_string(), "/tmp/run-x/kubeconfig".to_string())]);
+        assert_eq!(
+            env,
+            vec![(
+                "KUBECONFIG".to_string(),
+                "/tmp/run-x/kubeconfig".to_string()
+            )]
+        );
     }
 }

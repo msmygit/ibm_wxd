@@ -367,7 +367,11 @@ mod tests {
         );
         // Derived names must not collide with collected variable names.
         for d in DERIVED {
-            assert!(find(d.name).is_none(), "derived {} shadows a SPEC var", d.name);
+            assert!(
+                find(d.name).is_none(),
+                "derived {} shadows a SPEC var",
+                d.name
+            );
         }
     }
 }

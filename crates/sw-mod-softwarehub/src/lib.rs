@@ -107,8 +107,14 @@ pub fn cpd_env(ctx: &StepContext) -> Vec<(String, String)> {
     let mut env = vec![
         ("VERSION".to_string(), v),
         ("PATCH_ID".to_string(), input_or(ctx, "PATCH_ID", "latest")),
-        ("OPENSHIFT_TYPE".to_string(), input_or(ctx, "OPENSHIFT_TYPE", "self-managed")),
-        ("IMAGE_ARCH".to_string(), input_or(ctx, "IMAGE_ARCH", "amd64")),
+        (
+            "OPENSHIFT_TYPE".to_string(),
+            input_or(ctx, "OPENSHIFT_TYPE", "self-managed"),
+        ),
+        (
+            "IMAGE_ARCH".to_string(),
+            input_or(ctx, "IMAGE_ARCH", "amd64"),
+        ),
         ("OLM_UTILS_IMAGE".to_string(), olm_image),
     ];
     // cpd-cli manage runs the olm-utils container via its own Go docker client,
@@ -155,14 +161,16 @@ impl Step for PreflightHub {
                 return StepOutcome::Failed {
                     error: "no active OpenShift session".into(),
                     next_steps: vec![
-                        "Provision a cluster or provide an existing kubeconfig/login, then retry.".into(),
+                        "Provision a cluster or provide an existing kubeconfig/login, then retry."
+                            .into(),
                     ],
                 }
             }
         }
         if ctx.secret("IBM_ENTITLEMENT_KEY").is_none() {
             return StepOutcome::NeedsInput {
-                prompt: "Provide your IBM entitlement key (My IBM → Container software library).".into(),
+                prompt: "Provide your IBM entitlement key (My IBM → Container software library)."
+                    .into(),
                 fields: vec![InputField {
                     key: "IBM_ENTITLEMENT_KEY".into(),
                     label: "IBM entitlement key".into(),
@@ -192,7 +200,9 @@ impl Step for RestartContainer {
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let v = version(ctx);
-        ctx.log(format!("loading the olm-utils image for Software Hub {v} (VERSION={v})"));
+        ctx.log(format!(
+            "loading the olm-utils image for Software Hub {v} (VERSION={v})"
+        ));
         let args = vec!["manage".into(), "restart-container".into()];
         match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
             Ok(o) if o.success() => {
@@ -222,17 +232,27 @@ impl Step for LoginToOcp {
         "Log cpd-cli into the cluster"
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
-        let server = match ctx.run_in_cluster("oc", &["whoami".into(), "--show-server".into()]).await {
+        let server = match ctx
+            .run_in_cluster("oc", &["whoami".into(), "--show-server".into()])
+            .await
+        {
             Ok(o) if o.success() => o.stdout.trim().to_string(),
             _ => {
                 return StepOutcome::Failed {
                     error: "could not determine the cluster API server URL".into(),
-                    next_steps: vec!["Ensure `oc` has an active session against the run's cluster, then retry.".into()],
+                    next_steps: vec![
+                        "Ensure `oc` has an active session against the run's cluster, then retry."
+                            .into(),
+                    ],
                 }
             }
         };
 
-        let mut args = vec!["manage".into(), "login-to-ocp".into(), format!("--server={server}")];
+        let mut args = vec![
+            "manage".into(),
+            "login-to-ocp".into(),
+            format!("--server={server}"),
+        ];
         let mut mask: Vec<String> = Vec::new();
         // Prefer an explicit token/user/password (existing-cluster path); else
         // fall back to the provisioner's kubeadmin credentials.
@@ -247,7 +267,11 @@ impl Step for LoginToOcp {
             args.push("-p".into());
             args.push(pass.to_string());
         } else {
-            let pw_path = ctx.artifacts_dir().join("cluster").join("auth").join("kubeadmin-password");
+            let pw_path = ctx
+                .artifacts_dir()
+                .join("cluster")
+                .join("auth")
+                .join("kubeadmin-password");
             match std::fs::read_to_string(&pw_path) {
                 Ok(pw) if !pw.trim().is_empty() => {
                     let pw = pw.trim().to_string();
@@ -307,9 +331,10 @@ impl Step for AddEntitlement {
             Some(k) if !k.is_empty() => k.to_string(),
             _ => {
                 return StepOutcome::NeedsInput {
-                    prompt: "Provide your IBM entitlement key (My IBM → Container software library) \
+                    prompt:
+                        "Provide your IBM entitlement key (My IBM → Container software library) \
                              so the cluster can pull IBM images from cp.icr.io."
-                        .into(),
+                            .into(),
                     fields: vec![InputField {
                         key: "IBM_ENTITLEMENT_KEY".into(),
                         label: "IBM entitlement key".into(),
@@ -362,13 +387,19 @@ impl Step for WaitNodesReady {
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         ctx.log("checking that all nodes are Ready after the pull-secret update");
-        match ctx.run_in_cluster("oc", &["get".into(), "nodes".into(), "--no-headers".into()]).await {
+        match ctx
+            .run_in_cluster("oc", &["get".into(), "nodes".into(), "--no-headers".into()])
+            .await
+        {
             Ok(o) if o.success() => {
                 let lines: Vec<&str> = o.stdout.lines().filter(|l| !l.trim().is_empty()).collect();
                 if lines.is_empty() {
                     return StepOutcome::Failed {
                         error: "no nodes reported".into(),
-                        next_steps: vec!["Ensure `oc` has an active session against the cluster, then retry.".into()],
+                        next_steps: vec![
+                            "Ensure `oc` has an active session against the cluster, then retry."
+                                .into(),
+                        ],
                     };
                 }
                 // STATUS column: "Ready" | "Ready,SchedulingDisabled" | "NotReady" …
@@ -394,8 +425,18 @@ impl Step for WaitNodesReady {
                     }
                 }
             }
-            Ok(o) => fail(&format!("could not get nodes (exit {}): {}", o.status, o.diagnostic()), "Ensure `oc` has an active session, then retry."),
-            Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` is installed and on PATH, then retry."),
+            Ok(o) => fail(
+                &format!(
+                    "could not get nodes (exit {}): {}",
+                    o.status,
+                    o.diagnostic()
+                ),
+                "Ensure `oc` has an active session, then retry.",
+            ),
+            Err(e) => fail(
+                &format!("could not run oc: {e}"),
+                "Ensure `oc` is installed and on PATH, then retry.",
+            ),
         }
     }
 }
@@ -442,7 +483,16 @@ impl Step for InstallCertManager {
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         // Idempotency: cert-manager webhook already running?
         if let Ok(o) = ctx
-            .run_in_cluster("oc", &["get".into(), "deployment".into(), "cert-manager-webhook".into(), "-n".into(), "cert-manager".into()])
+            .run_in_cluster(
+                "oc",
+                &[
+                    "get".into(),
+                    "deployment".into(),
+                    "cert-manager-webhook".into(),
+                    "-n".into(),
+                    "cert-manager".into(),
+                ],
+            )
             .await
         {
             if o.success() {
@@ -453,22 +503,53 @@ impl Step for InstallCertManager {
         }
         let manifest = ctx.artifacts_dir().join("cert-manager.yaml");
         if let Err(e) = std::fs::write(&manifest, CERT_MANAGER_YAML) {
-            return fail(&format!("could not write cert-manager manifest: {e}"), "Check artifacts-dir permissions, then retry.");
+            return fail(
+                &format!("could not write cert-manager manifest: {e}"),
+                "Check artifacts-dir permissions, then retry.",
+            );
         }
         ctx.log("installing the Red Hat cert-manager Operator");
         match ctx
-            .run_in_cluster("oc", &["apply".into(), "-f".into(), manifest.to_string_lossy().into_owned()])
+            .run_in_cluster(
+                "oc",
+                &[
+                    "apply".into(),
+                    "-f".into(),
+                    manifest.to_string_lossy().into_owned(),
+                ],
+            )
             .await
         {
             Ok(o) if o.success() => {}
-            Ok(o) => return fail(&format!("oc apply (cert-manager) failed (exit {}): {}", o.status, o.diagnostic()), "Confirm the redhat-operators catalog is available, then retry."),
-            Err(e) => return fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active session, then retry."),
+            Ok(o) => {
+                return fail(
+                    &format!(
+                        "oc apply (cert-manager) failed (exit {}): {}",
+                        o.status,
+                        o.diagnostic()
+                    ),
+                    "Confirm the redhat-operators catalog is available, then retry.",
+                )
+            }
+            Err(e) => {
+                return fail(
+                    &format!("could not run oc: {e}"),
+                    "Ensure `oc` has an active session, then retry.",
+                )
+            }
         }
         // Wait (best-effort, retryable) for the webhook rollout.
         match ctx
             .run_in_cluster(
                 "oc",
-                &["rollout".into(), "status".into(), "deployment/cert-manager-webhook".into(), "-n".into(), "cert-manager".into(), "--timeout=180s".into()],
+                &[
+                    "rollout".into(),
+                    "status".into(),
+                    "deployment/cert-manager-webhook".into(),
+                    "-n".into(),
+                    "cert-manager".into(),
+                    "--timeout=180s".into(),
+                ],
             )
             .await
         {
@@ -478,7 +559,10 @@ impl Step for InstallCertManager {
             }
             _ => StepOutcome::Failed {
                 error: "cert-manager operator is still rolling out".into(),
-                next_steps: vec!["Wait a couple of minutes for cert-manager pods to become ready, then Retry.".into()],
+                next_steps: vec![
+                    "Wait a couple of minutes for cert-manager pods to become ready, then Retry."
+                        .into(),
+                ],
             },
         }
     }
@@ -505,17 +589,37 @@ impl Step for CreateNamespaces {
         }
         for ns in namespaces {
             // `oc create namespace` is not idempotent; ignore an AlreadyExists.
-            if let Ok(o) = ctx.run_in_cluster("oc", &["get".into(), "namespace".into(), ns.clone()]).await {
+            if let Ok(o) = ctx
+                .run_in_cluster("oc", &["get".into(), "namespace".into(), ns.clone()])
+                .await
+            {
                 if o.success() {
                     continue;
                 }
             }
             ctx.log(format!("creating namespace {ns}"));
-            match ctx.run_in_cluster("oc", &["create".into(), "namespace".into(), ns.clone()]).await {
+            match ctx
+                .run_in_cluster("oc", &["create".into(), "namespace".into(), ns.clone()])
+                .await
+            {
                 Ok(o) if o.success() => {}
                 Ok(o) if o.stderr.contains("AlreadyExists") => {}
-                Ok(o) => return fail(&format!("could not create namespace {ns} (exit {}): {}", o.status, o.diagnostic()), "Check cluster permissions, then retry."),
-                Err(e) => return fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active session, then retry."),
+                Ok(o) => {
+                    return fail(
+                        &format!(
+                            "could not create namespace {ns} (exit {}): {}",
+                            o.status,
+                            o.diagnostic()
+                        ),
+                        "Check cluster permissions, then retry.",
+                    )
+                }
+                Err(e) => {
+                    return fail(
+                        &format!("could not run oc: {e}"),
+                        "Ensure `oc` has an active session, then retry.",
+                    )
+                }
             }
         }
         ctx.progress(100);
@@ -533,11 +637,27 @@ async fn generate_and_apply_cluster_resources(
     what: &str,
 ) -> StepOutcome {
     ctx.log(format!("generating cluster-scoped resources for {what}"));
-    match ctx.run_in_cluster_pty_env("cpd-cli", &dl_args, &cpd_env(ctx), &[]).await {
+    match ctx
+        .run_in_cluster_pty_env("cpd-cli", &dl_args, &cpd_env(ctx), &[])
+        .await
+    {
         Ok(o) if o.success() => {}
-        Ok(o) => return fail(&format!("case-download (cluster resources, {what}) failed (exit {}): {}", o.status, o.diagnostic()),
-            "Confirm network access to the IBM CASE repository, then retry."),
-        Err(e) => return fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
+        Ok(o) => {
+            return fail(
+                &format!(
+                    "case-download (cluster resources, {what}) failed (exit {}): {}",
+                    o.status,
+                    o.diagnostic()
+                ),
+                "Confirm network access to the IBM CASE repository, then retry.",
+            )
+        }
+        Err(e) => {
+            return fail(
+                &format!("could not run cpd-cli: {e}"),
+                "Ensure `cpd-cli` is installed and on PATH, then retry.",
+            )
+        }
     }
     // Find the generated file (cpd-cli writes it under the workspace `work` dir)
     // and apply it server-side, per the docs.
@@ -634,7 +754,9 @@ impl Step for ApplyClusterComponents {
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let version = version(ctx);
-        ctx.log(format!("installing the License Service (apply-cluster-components) for release {version}"));
+        ctx.log(format!(
+            "installing the License Service (apply-cluster-components) for release {version}"
+        ));
         let args = vec![
             "manage".into(),
             "apply-cluster-components".into(),
@@ -644,14 +766,26 @@ impl Step for ApplyClusterComponents {
             format!("--licensing_ns={}", license_ns(ctx)),
             "--case_download=true".into(),
         ];
-        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
+        match ctx
+            .run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[])
+            .await
+        {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
-            Ok(o) => fail(&format!("apply-cluster-components failed (exit {}): {}", o.status, o.diagnostic()),
-                "Confirm cert-manager is installed and the entitlement key is valid, then retry."),
-            Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
+            Ok(o) => fail(
+                &format!(
+                    "apply-cluster-components failed (exit {}): {}",
+                    o.status,
+                    o.diagnostic()
+                ),
+                "Confirm cert-manager is installed and the entitlement key is valid, then retry.",
+            ),
+            Err(e) => fail(
+                &format!("could not run cpd-cli: {e}"),
+                "Ensure `cpd-cli` is installed and on PATH, then retry.",
+            ),
         }
     }
 }
@@ -661,7 +795,12 @@ impl Step for ApplyClusterComponents {
 async fn create_image_pull_secret(ctx: &StepContext, namespace: &str) -> StepOutcome {
     let key = match ctx.secret("IBM_ENTITLEMENT_KEY") {
         Some(k) if !k.is_empty() => k.to_string(),
-        _ => return fail("IBM entitlement key not available for the image pull secret", "Provide the IBM entitlement key, then retry."),
+        _ => {
+            return fail(
+                "IBM entitlement key not available for the image pull secret",
+                "Provide the IBM entitlement key, then retry.",
+            )
+        }
     };
     let name = image_pull_secret(ctx);
     ctx.log(format!("creating image pull secret {name} in {namespace}"));
@@ -677,14 +816,26 @@ async fn create_image_pull_secret(ctx: &StepContext, namespace: &str) -> StepOut
     );
     let kc = ctx.kubeconfig_path().to_string_lossy().into_owned();
     let env = [("KUBECONFIG".to_string(), kc), ("KEY".to_string(), key)];
-    match ctx.run_with_env("sh", &["-c".to_string(), script], &env).await {
+    match ctx
+        .run_with_env("sh", &["-c".to_string(), script], &env)
+        .await
+    {
         Ok(o) if o.success() => {
             ctx.progress(100);
             StepOutcome::Completed
         }
-        Ok(o) => fail(&format!("creating image pull secret in {namespace} failed (exit {}): {}", o.status, o.diagnostic()),
-            "Check cluster permissions and the entitlement key, then retry."),
-        Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active session, then retry."),
+        Ok(o) => fail(
+            &format!(
+                "creating image pull secret in {namespace} failed (exit {}): {}",
+                o.status,
+                o.diagnostic()
+            ),
+            "Check cluster permissions and the entitlement key, then retry.",
+        ),
+        Err(e) => fail(
+            &format!("could not run oc: {e}"),
+            "Ensure `oc` has an active session, then retry.",
+        ),
     }
 }
 
@@ -723,14 +874,26 @@ impl Step for ApplyScheduler {
             format!("--image_pull_prefix={}", image_pull_prefix(ctx)),
             format!("--image_pull_secret={}", image_pull_secret(ctx)),
         ];
-        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
+        match ctx
+            .run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[])
+            .await
+        {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
-            Ok(o) => fail(&format!("apply-scheduler failed (exit {}): {}", o.status, o.diagnostic()),
-                "Confirm the scheduler cluster-scoped resources and pull secret exist, then retry."),
-            Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
+            Ok(o) => fail(
+                &format!(
+                    "apply-scheduler failed (exit {}): {}",
+                    o.status,
+                    o.diagnostic()
+                ),
+                "Confirm the scheduler cluster-scoped resources and pull secret exist, then retry.",
+            ),
+            Err(e) => fail(
+                &format!("could not run cpd-cli: {e}"),
+                "Ensure `cpd-cli` is installed and on PATH, then retry.",
+            ),
         }
     }
 }
@@ -758,7 +921,10 @@ impl Step for ApplyBr {
             StepOutcome::Completed => {}
             other => return other,
         }
-        ctx.log(format!("installing backup/restore orchestration ({br_ns}); OADP in {}", oadp_ns(ctx)));
+        ctx.log(format!(
+            "installing backup/restore orchestration ({br_ns}); OADP in {}",
+            oadp_ns(ctx)
+        ));
         let args = vec![
             "manage".into(),
             "apply-br".into(),
@@ -831,7 +997,15 @@ impl Step for InstallPlatform {
         let (block_sc, file_sc) = storage_classes(ctx);
 
         if let Ok(o) = ctx
-            .run_in_cluster("oc", &["get".into(), "ZenService".into(), "-n".into(), inst_ns.clone()])
+            .run_in_cluster(
+                "oc",
+                &[
+                    "get".into(),
+                    "ZenService".into(),
+                    "-n".into(),
+                    inst_ns.clone(),
+                ],
+            )
             .await
         {
             if o.success() && o.stdout.contains("Completed") {
@@ -858,14 +1032,26 @@ impl Step for InstallPlatform {
             format!("--block_storage_class={block_sc}"),
             format!("--file_storage_class={file_sc}"),
         ];
-        match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
+        match ctx
+            .run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[])
+            .await
+        {
             Ok(o) if o.success() => {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
-            Ok(o) => fail(&format!("install-components (cpd_platform) failed (exit {}): {}", o.status, o.diagnostic()),
-                "Confirm operators reconciled and the storage classes exist, then retry."),
-            Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
+            Ok(o) => fail(
+                &format!(
+                    "install-components (cpd_platform) failed (exit {}): {}",
+                    o.status,
+                    o.diagnostic()
+                ),
+                "Confirm operators reconciled and the storage classes exist, then retry.",
+            ),
+            Err(e) => fail(
+                &format!("could not run cpd-cli: {e}"),
+                "Ensure `cpd-cli` is installed and on PATH, then retry.",
+            ),
         }
     }
 }
@@ -897,9 +1083,13 @@ impl Step for WaitReady {
             .run_in_cluster(
                 "oc",
                 &[
-                    "get".into(), "ibmcpd".into(), "ibmcpd-cr".into(),
-                    "-n".into(), inst_ns.clone(),
-                    "-o".into(), "jsonpath={.status.controlPlaneStatus}|{.status.currentVersion}".into(),
+                    "get".into(),
+                    "ibmcpd".into(),
+                    "ibmcpd-cr".into(),
+                    "-n".into(),
+                    inst_ns.clone(),
+                    "-o".into(),
+                    "jsonpath={.status.controlPlaneStatus}|{.status.currentVersion}".into(),
                 ],
             )
             .await
@@ -908,7 +1098,10 @@ impl Step for WaitReady {
             Ok(o) => {
                 return StepOutcome::Failed {
                     error: format!("cpd_platform (Ibmcpd) not ready yet: {}", o.diagnostic()),
-                    next_steps: vec!["The platform is still reconciling. Wait a few minutes, then Retry this step.".into()],
+                    next_steps: vec![
+                    "The platform is still reconciling. Wait a few minutes, then Retry this step."
+                        .into(),
+                ],
                 }
             }
             Err(e) => {
@@ -930,21 +1123,33 @@ impl Step for WaitReady {
             .run_in_cluster(
                 "oc",
                 &[
-                    "get".into(), "ZenService".into(), "lite-cr".into(),
-                    "-n".into(), inst_ns,
-                    "-o".into(), "jsonpath={.status.zenStatus}".into(),
+                    "get".into(),
+                    "ZenService".into(),
+                    "lite-cr".into(),
+                    "-n".into(),
+                    inst_ns,
+                    "-o".into(),
+                    "jsonpath={.status.zenStatus}".into(),
                 ],
             )
             .await
         {
             Ok(o) if o.success() && o.stdout.contains("Completed") => {
-                ctx.log(format!("control plane ready (Ibmcpd {cp_version} Completed, ZenService Completed)"));
+                ctx.log(format!(
+                    "control plane ready (Ibmcpd {cp_version} Completed, ZenService Completed)"
+                ));
                 ctx.progress(100);
                 StepOutcome::Completed
             }
             Ok(o) => StepOutcome::Failed {
-                error: format!("control plane not ready yet (ZenService status: {})", o.stdout.trim()),
-                next_steps: vec!["Installation is still reconciling. Wait a few minutes, then Retry this step.".into()],
+                error: format!(
+                    "control plane not ready yet (ZenService status: {})",
+                    o.stdout.trim()
+                ),
+                next_steps: vec![
+                    "Installation is still reconciling. Wait a few minutes, then Retry this step."
+                        .into(),
+                ],
             },
             Err(e) => StepOutcome::Failed {
                 error: format!("could not query readiness: {e}"),
@@ -959,19 +1164,37 @@ impl Step for WaitReady {
 /// Download the CASE packages for `components` at `release` (shared by the
 /// platform and services installs — `install-components` needs them locally).
 /// Returns `Some(Failed)` on error, or `None` on success.
-pub async fn case_download(ctx: &StepContext, release: &str, components: &str) -> Option<StepOutcome> {
-    ctx.log(format!("downloading CASE packages for [{components}] (release {release})"));
+pub async fn case_download(
+    ctx: &StepContext,
+    release: &str,
+    components: &str,
+) -> Option<StepOutcome> {
+    ctx.log(format!(
+        "downloading CASE packages for [{components}] (release {release})"
+    ));
     let args = vec![
         "manage".into(),
         "case-download".into(),
         format!("--release={release}"),
         format!("--components={components}"),
     ];
-    match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
+    match ctx
+        .run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[])
+        .await
+    {
         Ok(o) if o.success() => None,
-        Ok(o) => Some(fail(&format!("case-download failed (exit {}): {}", o.status, o.diagnostic()),
-            "Confirm network access to the IBM CASE repository (or use --from_oci), then retry.")),
-        Err(e) => Some(fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry.")),
+        Ok(o) => Some(fail(
+            &format!(
+                "case-download failed (exit {}): {}",
+                o.status,
+                o.diagnostic()
+            ),
+            "Confirm network access to the IBM CASE repository (or use --from_oci), then retry.",
+        )),
+        Err(e) => Some(fail(
+            &format!("could not run cpd-cli: {e}"),
+            "Ensure `cpd-cli` is installed and on PATH, then retry.",
+        )),
     }
 }
 
@@ -1023,11 +1246,19 @@ mod tests {
     use std::sync::Arc;
     use sw_core::{EventBus, MockCommandRunner, MockResponse};
 
-    fn ctx_with(runner: MockCommandRunner, inputs: &[(&str, &str)], secrets: &[(&str, &str)]) -> StepContext {
-        let inputs: BTreeMap<String, String> =
-            inputs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let secrets: BTreeMap<String, String> =
-            secrets.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    fn ctx_with(
+        runner: MockCommandRunner,
+        inputs: &[(&str, &str)],
+        secrets: &[(&str, &str)],
+    ) -> StepContext {
+        let inputs: BTreeMap<String, String> = inputs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let secrets: BTreeMap<String, String> = secrets
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         StepContext::with_artifacts(
             "run".into(),
             "mod-softwarehub/x".into(),
@@ -1041,7 +1272,11 @@ mod tests {
 
     #[test]
     fn module_exposes_the_install_components_flow_in_order() {
-        let ids: Vec<_> = SoftwareHubModule.steps().iter().map(|s| s.id().to_string()).collect();
+        let ids: Vec<_> = SoftwareHubModule
+            .steps()
+            .iter()
+            .map(|s| s.id().to_string())
+            .collect();
         assert_eq!(
             ids,
             vec![
@@ -1073,7 +1308,9 @@ mod tests {
         ]);
         let ctx = ctx_with(runner, &[], &[]);
         match PreflightHub.run(&ctx).await {
-            StepOutcome::NeedsInput { fields, .. } => assert_eq!(fields[0].key, "IBM_ENTITLEMENT_KEY"),
+            StepOutcome::NeedsInput { fields, .. } => {
+                assert_eq!(fields[0].key, "IBM_ENTITLEMENT_KEY")
+            }
             o => panic!("expected NeedsInput, got {o:?}"),
         }
     }
@@ -1090,7 +1327,10 @@ mod tests {
 
     #[tokio::test]
     async fn entitle_registry_applies_icr_cred() {
-        let runner = MockCommandRunner::new(vec![MockResponse::ok("add-icr-cred-to-global-pull-secret", "updated")]);
+        let runner = MockCommandRunner::new(vec![MockResponse::ok(
+            "add-icr-cred-to-global-pull-secret",
+            "updated",
+        )]);
         let ctx = ctx_with(runner, &[], &[("IBM_ENTITLEMENT_KEY", "k")]);
         assert_eq!(AddEntitlement.run(&ctx).await, StepOutcome::Completed);
     }
@@ -1120,7 +1360,10 @@ mod tests {
 
     #[tokio::test]
     async fn cert_manager_skips_when_present() {
-        let runner = MockCommandRunner::new(vec![MockResponse::ok("get deployment cert-manager-webhook", "cert-manager-webhook")]);
+        let runner = MockCommandRunner::new(vec![MockResponse::ok(
+            "get deployment cert-manager-webhook",
+            "cert-manager-webhook",
+        )]);
         let ctx = ctx_with(runner, &[], &[]);
         assert_eq!(InstallCertManager.run(&ctx).await, StepOutcome::Completed);
     }
@@ -1129,7 +1372,10 @@ mod tests {
     async fn scheduler_cluster_resources_skips_by_default() {
         // Scheduler is opt-in (install_scheduler defaults false) → skip.
         let ctx = ctx_with(MockCommandRunner::new(vec![]), &[], &[]);
-        assert_eq!(SchedulerClusterResources.run(&ctx).await, StepOutcome::Completed);
+        assert_eq!(
+            SchedulerClusterResources.run(&ctx).await,
+            StepOutcome::Completed
+        );
     }
 
     #[tokio::test]
@@ -1139,15 +1385,18 @@ mod tests {
             MockResponse::ok("apply", "applied"),
         ]);
         let ctx = ctx_with(runner, &[("install_scheduler", "true")], &[]);
-        assert_eq!(SchedulerClusterResources.run(&ctx).await, StepOutcome::Completed);
+        assert_eq!(
+            SchedulerClusterResources.run(&ctx).await,
+            StepOutcome::Completed
+        );
     }
 
     #[tokio::test]
     async fn install_platform_runs_case_download_then_install_components() {
         let runner = MockCommandRunner::new(vec![
-            MockResponse::ok("get ZenService", ""),          // not yet installed
-            MockResponse::ok("case-download", "ok"),         // CASE download
-            MockResponse::ok("install-components", "ok"),    // platform install
+            MockResponse::ok("get ZenService", ""),  // not yet installed
+            MockResponse::ok("case-download", "ok"), // CASE download
+            MockResponse::ok("install-components", "ok"), // platform install
         ]);
         let ctx = ctx_with(runner, &[("VERSION", "5.3.1")], &[]);
         assert_eq!(InstallPlatform.run(&ctx).await, StepOutcome::Completed);
@@ -1185,7 +1434,9 @@ mod tests {
         ]);
         let ctx = ctx_with(runner, &[], &[]);
         match WaitReady.run(&ctx).await {
-            StepOutcome::Failed { next_steps, .. } => assert!(next_steps.iter().any(|s| s.contains("Retry"))),
+            StepOutcome::Failed { next_steps, .. } => {
+                assert!(next_steps.iter().any(|s| s.contains("Retry")))
+            }
             o => panic!("expected Failed, got {o:?}"),
         }
     }

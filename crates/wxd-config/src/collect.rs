@@ -238,7 +238,12 @@ mod tests {
     }
 
     impl Prompter for FakePrompter {
-        fn prompt(&mut self, name: &str, _description: &str, _secret: bool) -> std::io::Result<String> {
+        fn prompt(
+            &mut self,
+            name: &str,
+            _description: &str,
+            _secret: bool,
+        ) -> std::io::Result<String> {
             self.asked.push(name.to_string());
             Ok(self.answers.get(name).cloned().unwrap_or_default())
         }
@@ -336,11 +341,18 @@ mod tests {
                 d.name
             );
         }
-        assert!(reparsed.warnings.is_empty(), "no warnings: {:?}", reparsed.warnings);
+        assert!(
+            reparsed.warnings.is_empty(),
+            "no warnings: {:?}",
+            reparsed.warnings
+        );
 
         // The reparsed collected set equals the original config exactly,
         // including single-quote-bearing values.
-        assert_eq!(reparsed.values, config, "collected vars must round-trip exactly");
+        assert_eq!(
+            reparsed.values, config,
+            "collected vars must round-trip exactly"
+        );
     }
 
     #[test]
@@ -352,7 +364,11 @@ mod tests {
         let parsed = parse_answers("VERSION=5.4.0\nVERSION=5.4.1\n").unwrap();
         assert_eq!(parsed.values["VERSION"], "5.4.1");
         // The duplicate is a known SPEC key, so no unknown-key warning fires.
-        assert!(parsed.warnings.is_empty(), "warnings: {:?}", parsed.warnings);
+        assert!(
+            parsed.warnings.is_empty(),
+            "warnings: {:?}",
+            parsed.warnings
+        );
     }
 
     #[test]
@@ -363,7 +379,10 @@ mod tests {
                     OLM_UTILS_IMAGE=icr.io/cpopen/cpd/olm-utils-v4:${VERSION}\n\
                     PROJECT_INST_BR_SVC=${PROJECT_CPD_INST_OPERATORS}-br-svc\n";
         let parsed = parse_answers(body).unwrap();
-        assert!(parsed.values.is_empty(), "derived vars must not be collected");
+        assert!(
+            parsed.values.is_empty(),
+            "derived vars must not be collected"
+        );
         assert!(parsed.warnings.is_empty(), "derived vars must not warn");
     }
 
@@ -421,8 +440,7 @@ mod tests {
     fn file_used_when_env_absent() {
         let mut answers = BTreeMap::new();
         answers.insert("VERSION".to_string(), "from-file".to_string());
-        let config =
-            collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
+        let config = collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
         assert_eq!(config["VERSION"], "from-file");
     }
 
@@ -432,8 +450,7 @@ mod tests {
     fn non_interactive_never_prompts() {
         let answers = BTreeMap::new();
         // NeverPrompter panics if called; reaching the end proves no prompt.
-        let config =
-            collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
+        let config = collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
         // Nothing supplied, nothing prompted. The only entries present are the
         // two defaulted vars (VERSION, PATCH_ID); every other (defaultless) var
         // is absent so the validator will flag it missing.
@@ -449,8 +466,7 @@ mod tests {
     #[test]
     fn version_defaults_when_absent() {
         let answers = BTreeMap::new();
-        let config =
-            collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
+        let config = collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
         assert_eq!(config["VERSION"], "5.4.0");
     }
 
@@ -459,8 +475,7 @@ mod tests {
         // A user-supplied value (distinct from the 5.4.0 default) must win.
         let mut answers = BTreeMap::new();
         answers.insert("VERSION".to_string(), "5.3.x".to_string());
-        let config =
-            collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
+        let config = collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
         assert_eq!(config["VERSION"], "5.3.x");
     }
 
@@ -469,8 +484,7 @@ mod tests {
         // A var with no default (e.g. OCP_URL) must NOT be filled — it has to
         // reach the validator as missing so it errors as required.
         let answers = BTreeMap::new();
-        let config =
-            collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
+        let config = collect(Mode::NonInteractive, &answers, &no_env, &mut NeverPrompter).unwrap();
         assert!(!config.contains_key("OCP_URL"));
         assert!(!config.contains_key("IBM_ENTITLEMENT_KEY"));
     }

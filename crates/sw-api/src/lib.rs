@@ -64,7 +64,11 @@ pub fn build_router(state: AppState) -> axum::Router {
 }
 
 /// Convenience constructor used by the binary and by tests.
-pub fn app(orch: Orchestrator, token: impl Into<String>, ui_dir: impl Into<std::path::PathBuf>) -> axum::Router {
+pub fn app(
+    orch: Orchestrator,
+    token: impl Into<String>,
+    ui_dir: impl Into<std::path::PathBuf>,
+) -> axum::Router {
     let state = AppState {
         orch,
         token: token.into(),

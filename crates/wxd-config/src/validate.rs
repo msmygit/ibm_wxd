@@ -81,11 +81,7 @@ pub fn validate_value(spec: &VarSpec, value: &str) -> VarOutcome {
 /// A value is considered "provided" when present and non-empty after trimming.
 /// `lookup` returns the collected value for a variable name (or `None`).
 pub fn validate_auth(lookup: &dyn Fn(&str) -> Option<String>) -> Option<ValidationError> {
-    let present = |name: &str| {
-        lookup(name)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    };
+    let present = |name: &str| lookup(name).map(|v| !v.trim().is_empty()).unwrap_or(false);
 
     let has_userpass = present(crate::spec::AUTH_USERNAME) && present(crate::spec::AUTH_PASSWORD);
     let has_token = present(crate::spec::AUTH_TOKEN);
@@ -111,11 +107,7 @@ pub fn validate_auth(lookup: &dyn Fn(&str) -> Option<String>) -> Option<Validati
 /// lines (and vice-versa). If (unusually) both methods are complete, the
 /// username+password pair is chosen deterministically.
 pub fn auth_vars_to_emit(lookup: &dyn Fn(&str) -> Option<String>) -> Vec<&'static str> {
-    let present = |name: &str| {
-        lookup(name)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    };
+    let present = |name: &str| lookup(name).map(|v| !v.trim().is_empty()).unwrap_or(false);
     let has_userpass = present(crate::spec::AUTH_USERNAME) && present(crate::spec::AUTH_PASSWORD);
 
     if has_userpass {
@@ -178,10 +170,7 @@ fn check_url(var: &str, value: &str) -> VarOutcome {
         );
     }
     if value.chars().any(char::is_whitespace) {
-        return err(
-            var,
-            format!("must not contain whitespace, got '{value}'"),
-        );
+        return err(var, format!("must not contain whitespace, got '{value}'"));
     }
 
     VarOutcome::default()
@@ -194,10 +183,7 @@ fn check_namespace(var: &str, value: &str) -> VarOutcome {
                          1-63 chars, starting and ending with an alphanumeric character)";
 
     if value.len() > 63 {
-        return err(
-            var,
-            format!("{RULE}; got {} characters", value.len()),
-        );
+        return err(var, format!("{RULE}; got {} characters", value.len()));
     }
 
     let valid_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
@@ -209,10 +195,7 @@ fn check_namespace(var: &str, value: &str) -> VarOutcome {
     let first = value.chars().next().unwrap();
     let last = value.chars().last().unwrap();
     if !is_alnum(first) || !is_alnum(last) {
-        return err(
-            var,
-            format!("{RULE}; must not start or end with '-'"),
-        );
+        return err(var, format!("{RULE}; must not start or end with '-'"));
     }
 
     VarOutcome::default()
@@ -422,7 +405,10 @@ mod tests {
     #[test]
     fn empty_optional_auth_var_does_not_error() {
         let outcome = validate_value(spec_for("OCP_TOKEN"), "");
-        assert!(outcome.error.is_none(), "optional var must not error when empty");
+        assert!(
+            outcome.error.is_none(),
+            "optional var must not error when empty"
+        );
         let outcome = validate_value(spec_for("OCP_USERNAME"), "");
         assert!(outcome.error.is_none());
     }
@@ -471,7 +457,11 @@ mod tests {
 
     #[test]
     fn auth_empty_values_count_as_absent() {
-        let l = lookup_from(&[("OCP_USERNAME", ""), ("OCP_PASSWORD", ""), ("OCP_TOKEN", "  ")]);
+        let l = lookup_from(&[
+            ("OCP_USERNAME", ""),
+            ("OCP_PASSWORD", ""),
+            ("OCP_TOKEN", "  "),
+        ]);
         assert!(validate_auth(&l).is_some());
     }
 

@@ -57,7 +57,11 @@ fn complete_env_token() -> Vec<(&'static str, &'static str)> {
 
 /// Run the binary with a clean environment (only the vars we pass), the given
 /// args, and no stdin. Returns (exit_success, stdout, stderr).
-fn run_clean(env: &[(&str, &str)], args: &[&str], out_path: &std::path::Path) -> (bool, String, String) {
+fn run_clean(
+    env: &[(&str, &str)],
+    args: &[&str],
+    out_path: &std::path::Path,
+) -> (bool, String, String) {
     let mut cmd = Command::new(bin());
     cmd.env_clear();
     // Keep PATH so the process can run; it changes no behavior under test.
@@ -181,18 +185,30 @@ fn derived_vars_expand_when_sourced() {
 
     // bash -n first.
     assert!(
-        Command::new(sh).arg("-n").arg(&out_path).status().unwrap().success(),
+        Command::new(sh)
+            .arg("-n")
+            .arg(&out_path)
+            .status()
+            .unwrap()
+            .success(),
         "generated file (with derived vars) is not valid shell"
     );
 
     let cases = [
-        ("SERVER_ARGUMENTS", "--server=https://api.cluster.example.com:6443"),
+        (
+            "SERVER_ARGUMENTS",
+            "--server=https://api.cluster.example.com:6443",
+        ),
         ("OLM_UTILS_IMAGE", "icr.io/cpopen/cpd/olm-utils-v4:5.4.0"),
         ("PROJECT_INST_BR_SVC", "cpd-operators-br-svc"),
     ];
     for (var, expected) in cases {
         let script = format!("source '{}'; printf '%s' \"${var}\"", out_path.display());
-        let output = Command::new(sh).arg("-c").arg(&script).output().expect("source");
+        let output = Command::new(sh)
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("source");
         assert!(output.status.success(), "sourcing failed for {var}");
         let got = String::from_utf8_lossy(&output.stdout);
         assert_eq!(got, expected, "derived {var} expanded wrong");
@@ -213,7 +229,12 @@ fn token_auth_generates_valid_shell_without_userpass() {
     assert!(!contents.contains("OCP_PASSWORD"));
     if let Some(sh) = find_shell() {
         assert!(
-            Command::new(sh).arg("-n").arg(&out_path).status().unwrap().success(),
+            Command::new(sh)
+                .arg("-n")
+                .arg(&out_path)
+                .status()
+                .unwrap()
+                .success(),
             "token-auth file is not valid shell"
         );
     }
@@ -331,7 +352,10 @@ fn version_omitted_defaults_to_5_4_0() {
     let mut env = complete_env();
     env.retain(|(k, _)| *k != "VERSION");
     let (ok, _o, e) = run_clean(&env, &["--non-interactive"], &out_path);
-    assert!(ok, "omitting VERSION should still succeed via default; stderr:\n{e}");
+    assert!(
+        ok,
+        "omitting VERSION should still succeed via default; stderr:\n{e}"
+    );
     let contents = std::fs::read_to_string(&out_path).expect("file should exist");
     assert!(
         contents.contains("export VERSION='5.4.0'"),
@@ -371,7 +395,10 @@ fn generated_file_reused_as_answers_is_byte_identical() {
     let output = cmd.output().expect("run reuse");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "reuse run failed: {stderr}");
-    assert!(!stderr.contains("unknown"), "no unknown-key warning: {stderr}");
+    assert!(
+        !stderr.contains("unknown"),
+        "no unknown-key warning: {stderr}"
+    );
 
     let second_contents = std::fs::read(&second).unwrap();
     assert_eq!(
