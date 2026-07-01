@@ -528,6 +528,9 @@ $("#start-btn").addEventListener("click", async () => {
     $("#log").textContent = "";
     const mode = selectedMode();
     const inputs = { components: collectComponents() };
+    // Software Hub release (drives cpd-cli --release across the install).
+    const swhVersion = ($("#swh-version")?.value || "").trim();
+    if (swhVersion) inputs.VERSION = swhVersion;
     if (mode === "existing") {
       for (const i of document.querySelectorAll("#existing-form input[data-existing-input]")) {
         const v = i.value.trim();

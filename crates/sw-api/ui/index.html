@@ -38,6 +38,12 @@
         <h3>Cloud provider</h3>
         <ul id="hyperscalers" class="chips" role="radiogroup" aria-label="Cloud provider"></ul>
       </div>
+      <h3>Software Hub version</h3>
+      <label class="swh-version">
+        <span>Release (must be supported by the installed cpd-cli)</span>
+        <input id="swh-version" type="text" value="5.4.0" pattern="\d+\.\d+(\.\d+)?"
+               title="Version like 5.4.0 or 5.3.1" autocomplete="off" />
+      </label>
       <h3>Services <span class="muted">(watsonx.data preselected — hover to expand, pick any to install)</span></h3>
       <ul id="services" class="checks"></ul>
     </section>

@@ -161,7 +161,26 @@ impl StepContext {
         program: &str,
         args: &[String],
     ) -> std::io::Result<CommandOutput> {
-        self.log(format!("$ {}", self.cmdline(program, args)));
+        self.run_in_cluster_pty_masking(program, args, &[]).await
+    }
+
+    /// Like [`run_in_cluster_pty`](Self::run_in_cluster_pty) but also masks the
+    /// given literal values in the echoed command line — for sensitive arguments
+    /// that are not in the secret store (e.g. a kubeadmin password read from the
+    /// installer's `auth/` dir).
+    pub async fn run_in_cluster_pty_masking(
+        &self,
+        program: &str,
+        args: &[String],
+        extra_mask: &[String],
+    ) -> std::io::Result<CommandOutput> {
+        let mut line = self.cmdline(program, args);
+        for v in extra_mask {
+            if v.len() >= 4 && line.contains(v.as_str()) {
+                line = line.replace(v.as_str(), "***");
+            }
+        }
+        self.log(format!("$ {line}"));
         let kc = self.kubeconfig_path().to_string_lossy().into_owned();
         let env = [("KUBECONFIG".to_string(), kc)];
         let (wrapped_program, wrapped_args) = pty_wrap(program, args);

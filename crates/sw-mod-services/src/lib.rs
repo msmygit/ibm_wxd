@@ -229,21 +229,50 @@ impl Step for ApplyComponentsStep {
     }
     async fn run(&self, ctx: &StepContext) -> StepOutcome {
         let components = selected_components(ctx);
-        let ns = operands_ns(ctx);
+        let op_ns = ctx.input("PROJECT_CPD_INST_OPERATORS").unwrap_or("cpd-operators").to_string();
+        let inst_ns = operands_ns(ctx);
         let version = ctx.input("VERSION").unwrap_or("5.4.0").to_string();
         // Software Hub services (watsonx.data et al.) need both a block (RWO) and
         // a file (RWX) storage class. Defaults match a provisioned AWS cluster.
         let block_sc = ctx.input("block_storage_class").unwrap_or("gp3-csi").to_string();
         let file_sc = ctx.input("file_storage_class").unwrap_or("efs-sc").to_string();
+
+        // install-components installs from locally-downloaded CASE packages —
+        // fetch them for the selected components first.
+        ctx.log(format!("downloading CASE packages for [{components}] (release {version})"));
+        let dl = vec![
+            "manage".into(),
+            "case-download".into(),
+            format!("--release={version}"),
+            format!("--components={components}"),
+        ];
+        match ctx.run_in_cluster_pty("cpd-cli", &dl).await {
+            Ok(o) if o.success() => {}
+            Ok(o) => {
+                return StepOutcome::Failed {
+                    error: format!("case-download for services failed (exit {}): {}", o.status, o.stderr.trim()),
+                    next_steps: vec!["Confirm network access to the IBM CASE repository, then retry.".into()],
+                }
+            }
+            Err(e) => {
+                return StepOutcome::Failed {
+                    error: format!("could not run cpd-cli: {e}"),
+                    next_steps: vec!["Ensure cpd-cli is installed (Prerequisites), then retry.".into()],
+                }
+            }
+        }
+
         ctx.log(format!(
-            "applying components [{components}] in {ns} (release {version}); block={block_sc}, file={file_sc}"
+            "installing components [{components}] (release {version}); block={block_sc}, file={file_sc}"
         ));
         let args = vec![
             "manage".into(),
-            "apply-cr".into(),
+            "install-components".into(),
+            "--license_acceptance=true".into(),
             format!("--components={components}"),
-            format!("--cpd_instance_ns={ns}"),
             format!("--release={version}"),
+            format!("--operator_ns={op_ns}"),
+            format!("--instance_ns={inst_ns}"),
             format!("--block_storage_class={block_sc}"),
             format!("--file_storage_class={file_sc}"),
         ];
@@ -253,10 +282,10 @@ impl Step for ApplyComponentsStep {
                 StepOutcome::Completed
             }
             Ok(o) => StepOutcome::Failed {
-                error: format!("apply-cr for services failed (exit {}): {}", o.status, o.stderr.trim()),
+                error: format!("install-components for services failed (exit {}): {}", o.status, o.stderr.trim()),
                 next_steps: vec![
                     "Confirm the entitlement key, storage classes, and component ids, then retry.".into(),
-                    format!("Inspect operand status: oc get ZenService -n {ns}"),
+                    format!("Inspect operand status: oc get ZenService -n {inst_ns}"),
                 ],
             },
             Err(e) => StepOutcome::Failed {
@@ -475,23 +504,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_uses_selected_components_and_defaults() {
-        // explicit multi-select
-        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::ok("apply-cr", "ok")]));
+    async fn install_uses_selected_components_and_defaults() {
+        // explicit multi-select: case-download then install-components succeed
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            MockResponse::ok("case-download", "ok"),
+            MockResponse::ok("install-components", "ok"),
+        ]));
         let ctx = ctx_inputs(runner.clone(), &[("components", "watsonx_data,watsonx_ai")]);
         assert_eq!(ApplyComponentsStep.run(&ctx).await, StepOutcome::Completed);
-        assert!(runner.calls().iter().any(|c| c.contains("--components=watsonx_data,watsonx_ai")));
+        assert!(runner.calls().iter().any(|c| c.contains("install-components") && c.contains("--components=watsonx_data,watsonx_ai")));
 
         // default when absent
-        let runner2 = Arc::new(MockCommandRunner::new(vec![MockResponse::ok("apply-cr", "ok")]));
+        let runner2 = Arc::new(MockCommandRunner::new(vec![
+            MockResponse::ok("case-download", "ok"),
+            MockResponse::ok("install-components", "ok"),
+        ]));
         let ctx2 = ctx_inputs(runner2.clone(), &[]);
         assert_eq!(ApplyComponentsStep.run(&ctx2).await, StepOutcome::Completed);
-        assert!(runner2.calls().iter().any(|c| c.contains("--components=watsonx_data")));
+        assert!(runner2.calls().iter().any(|c| c.contains("install-components") && c.contains("--components=watsonx_data")));
     }
 
     #[tokio::test]
-    async fn apply_failure_reports_next_steps() {
-        let runner = Arc::new(MockCommandRunner::new(vec![MockResponse::fail("apply-cr", 1, "bad component")]));
+    async fn install_failure_reports_next_steps() {
+        let runner = Arc::new(MockCommandRunner::new(vec![
+            MockResponse::ok("case-download", "ok"),
+            MockResponse::fail("install-components", 1, "bad component"),
+        ]));
         let ctx = ctx_inputs(runner, &[("components", "nope")]);
         match ApplyComponentsStep.run(&ctx).await {
             StepOutcome::Failed { next_steps, .. } => assert!(!next_steps.is_empty()),
