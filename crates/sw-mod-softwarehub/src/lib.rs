@@ -200,7 +200,7 @@ impl Step for RestartContainer {
                 StepOutcome::Completed
             }
             Ok(o) => fail(
-                &format!("restart-container failed (exit {}): {}", o.status, o.stderr.trim()),
+                &format!("restart-container failed (exit {}): {}", o.status, o.diagnostic()),
                 "Ensure a container runtime is running and can pull the olm-utils image, then retry.",
             ),
             Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
@@ -277,7 +277,7 @@ impl Step for LoginToOcp {
                 StepOutcome::Completed
             }
             Ok(o) => StepOutcome::Failed {
-                error: format!("login-to-ocp failed (exit {}): {}", o.status, o.stderr.trim()),
+                error: format!("login-to-ocp failed (exit {}): {}", o.status, o.diagnostic()),
                 next_steps: vec![
                     "Verify the API URL and credentials; ensure a container runtime is running, then retry.".into(),
                 ],
@@ -332,7 +332,7 @@ impl Step for AddEntitlement {
                 StepOutcome::Completed
             }
             Ok(o) => StepOutcome::Failed {
-                error: format!("add-icr-cred-to-global-pull-secret failed (exit {}): {}", o.status, o.stderr.trim()),
+                error: format!("add-icr-cred-to-global-pull-secret failed (exit {}): {}", o.status, o.diagnostic()),
                 next_steps: vec![
                     "Verify the IBM entitlement key is valid (it must authenticate to cp.icr.io — it is NOT the IBM Cloud API key).".into(),
                     "Ensure a container runtime is running and cpd-cli is logged in, then retry.".into(),
@@ -394,7 +394,7 @@ impl Step for WaitNodesReady {
                     }
                 }
             }
-            Ok(o) => fail(&format!("could not get nodes (exit {}): {}", o.status, o.stderr.trim()), "Ensure `oc` has an active session, then retry."),
+            Ok(o) => fail(&format!("could not get nodes (exit {}): {}", o.status, o.diagnostic()), "Ensure `oc` has an active session, then retry."),
             Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` is installed and on PATH, then retry."),
         }
     }
@@ -461,7 +461,7 @@ impl Step for InstallCertManager {
             .await
         {
             Ok(o) if o.success() => {}
-            Ok(o) => return fail(&format!("oc apply (cert-manager) failed (exit {}): {}", o.status, o.stderr.trim()), "Confirm the redhat-operators catalog is available, then retry."),
+            Ok(o) => return fail(&format!("oc apply (cert-manager) failed (exit {}): {}", o.status, o.diagnostic()), "Confirm the redhat-operators catalog is available, then retry."),
             Err(e) => return fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active session, then retry."),
         }
         // Wait (best-effort, retryable) for the webhook rollout.
@@ -514,7 +514,7 @@ impl Step for CreateNamespaces {
             match ctx.run_in_cluster("oc", &["create".into(), "namespace".into(), ns.clone()]).await {
                 Ok(o) if o.success() => {}
                 Ok(o) if o.stderr.contains("AlreadyExists") => {}
-                Ok(o) => return fail(&format!("could not create namespace {ns} (exit {}): {}", o.status, o.stderr.trim()), "Check cluster permissions, then retry."),
+                Ok(o) => return fail(&format!("could not create namespace {ns} (exit {}): {}", o.status, o.diagnostic()), "Check cluster permissions, then retry."),
                 Err(e) => return fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active session, then retry."),
             }
         }
@@ -535,7 +535,7 @@ async fn generate_and_apply_cluster_resources(
     ctx.log(format!("generating cluster-scoped resources for {what}"));
     match ctx.run_in_cluster_pty_env("cpd-cli", &dl_args, &cpd_env(ctx), &[]).await {
         Ok(o) if o.success() => {}
-        Ok(o) => return fail(&format!("case-download (cluster resources, {what}) failed (exit {}): {}", o.status, o.stderr.trim()),
+        Ok(o) => return fail(&format!("case-download (cluster resources, {what}) failed (exit {}): {}", o.status, o.diagnostic()),
             "Confirm network access to the IBM CASE repository, then retry."),
         Err(e) => return fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
     }
@@ -550,7 +550,7 @@ async fn generate_and_apply_cluster_resources(
             ctx.progress(100);
             StepOutcome::Completed
         }
-        Ok(o) => fail(&format!("oc apply (cluster resources, {what}) failed (exit {}): {}", o.status, o.stderr.trim()),
+        Ok(o) => fail(&format!("oc apply (cluster resources, {what}) failed (exit {}): {}", o.status, o.diagnostic()),
             "Ensure cluster-admin access and that cluster_scoped_resources.yaml was generated, then retry."),
         Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active session, then retry."),
     }
@@ -649,7 +649,7 @@ impl Step for ApplyClusterComponents {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
-            Ok(o) => fail(&format!("apply-cluster-components failed (exit {}): {}", o.status, o.stderr.trim()),
+            Ok(o) => fail(&format!("apply-cluster-components failed (exit {}): {}", o.status, o.diagnostic()),
                 "Confirm cert-manager is installed and the entitlement key is valid, then retry."),
             Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
         }
@@ -682,7 +682,7 @@ async fn create_image_pull_secret(ctx: &StepContext, namespace: &str) -> StepOut
             ctx.progress(100);
             StepOutcome::Completed
         }
-        Ok(o) => fail(&format!("creating image pull secret in {namespace} failed (exit {}): {}", o.status, o.stderr.trim()),
+        Ok(o) => fail(&format!("creating image pull secret in {namespace} failed (exit {}): {}", o.status, o.diagnostic()),
             "Check cluster permissions and the entitlement key, then retry."),
         Err(e) => fail(&format!("could not run oc: {e}"), "Ensure `oc` has an active session, then retry."),
     }
@@ -728,7 +728,7 @@ impl Step for ApplyScheduler {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
-            Ok(o) => fail(&format!("apply-scheduler failed (exit {}): {}", o.status, o.stderr.trim()),
+            Ok(o) => fail(&format!("apply-scheduler failed (exit {}): {}", o.status, o.diagnostic()),
                 "Confirm the scheduler cluster-scoped resources and pull secret exist, then retry."),
             Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
         }
@@ -777,7 +777,7 @@ impl Step for ApplyBr {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
-            Ok(o) => fail(&format!("apply-br failed (exit {}): {}", o.status, o.stderr.trim()),
+            Ok(o) => fail(&format!("apply-br failed (exit {}): {}", o.status, o.diagnostic()),
                 "Ensure the OADP operator is installed in OADP_PROJECT and the br cluster resources/pull secret exist, then retry."),
             Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
         }
@@ -863,7 +863,7 @@ impl Step for InstallPlatform {
                 ctx.progress(100);
                 StepOutcome::Completed
             }
-            Ok(o) => fail(&format!("install-components (cpd_platform) failed (exit {}): {}", o.status, o.stderr.trim()),
+            Ok(o) => fail(&format!("install-components (cpd_platform) failed (exit {}): {}", o.status, o.diagnostic()),
                 "Confirm operators reconciled and the storage classes exist, then retry."),
             Err(e) => fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry."),
         }
@@ -907,7 +907,7 @@ impl Step for WaitReady {
             Ok(o) if o.success() => o.stdout.trim().to_string(),
             Ok(o) => {
                 return StepOutcome::Failed {
-                    error: format!("cpd_platform (Ibmcpd) not ready yet: {}", o.stderr.trim()),
+                    error: format!("cpd_platform (Ibmcpd) not ready yet: {}", o.diagnostic()),
                     next_steps: vec!["The platform is still reconciling. Wait a few minutes, then Retry this step.".into()],
                 }
             }
@@ -969,7 +969,7 @@ pub async fn case_download(ctx: &StepContext, release: &str, components: &str) -
     ];
     match ctx.run_in_cluster_pty_env("cpd-cli", &args, &cpd_env(ctx), &[]).await {
         Ok(o) if o.success() => None,
-        Ok(o) => Some(fail(&format!("case-download failed (exit {}): {}", o.status, o.stderr.trim()),
+        Ok(o) => Some(fail(&format!("case-download failed (exit {}): {}", o.status, o.diagnostic()),
             "Confirm network access to the IBM CASE repository (or use --from_oci), then retry.")),
         Err(e) => Some(fail(&format!("could not run cpd-cli: {e}"), "Ensure `cpd-cli` is installed and on PATH, then retry.")),
     }
